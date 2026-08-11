@@ -99,7 +99,7 @@ face_detector:
     require_valid_landmarks: true
 
 gender_classifier:
-  model_path: artifacts/gender_classifier/best_model.pth
+  model_path: artifacts/gender_classifier/face_gender_classifier_mobilenet_v3_large.pth
   input_size: 224
   confidence_threshold: 0.75
   minimum_observations: 3
@@ -115,7 +115,7 @@ gender_classifier:
 # It never shares raw logits with the face classifier.
 body_gender_classifier:
   enabled: true
-  model_path: artifacts/body_gender_classifier/best_body_gender_model.pth
+  model_path: artifacts/body_gender_classifier/body_gender_classifier_mobilenet_v3_small.pth
   confidence_threshold: 0.77
   minimum_person_width: 16
   minimum_person_height: 48

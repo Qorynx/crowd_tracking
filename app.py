@@ -19,7 +19,12 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 # The interactive app uses the selected FastTracker production profile unless
 # PIPELINE_CONFIG points to a calibrated deployment profile.
 CONFIG_PATH = Path(os.getenv("PIPELINE_CONFIG", PROJECT_ROOT / "configs" / "pipeline-live.yaml"))
-DEFAULT_MODEL_PATH = PROJECT_ROOT / "artifacts" / "gender_classifier" / "best_model.pth"
+DEFAULT_MODEL_PATH = (
+    PROJECT_ROOT
+    / "artifacts"
+    / "gender_classifier"
+    / "face_gender_classifier_mobilenet_v3_large.pth"
+)
 # Each live stream owns a YOLO tracker and three model objects. Keep this demo bounded so
 # reconnects or multiple browser tabs cannot retain GPU models indefinitely.
 LIVE_STREAM_EVERY_SECONDS = max(0.01, float(os.getenv("LIVE_STREAM_EVERY_SECONDS", "0.15")))

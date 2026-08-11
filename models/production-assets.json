@@ -17,14 +17,14 @@
     },
     {
       "id": "gender_classifier",
-      "path": "artifacts/gender_classifier/best_model.pth",
+      "path": "artifacts/gender_classifier/face_gender_classifier_mobilenet_v3_large.pth",
       "sha256": "3104696fc60fac62485e09abcfa6f3a73949128568e3b0bbc7fa3394beaad19c",
       "size_bytes": 17031113,
       "required_by": "pipeline-live.yaml"
     },
     {
       "id": "body_gender_classifier",
-      "path": "artifacts/body_gender_classifier/best_body_gender_model.pth",
+      "path": "artifacts/body_gender_classifier/body_gender_classifier_mobilenet_v3_small.pth",
       "sha256": "3a59d875cbb78d800e5f53d5c05ddd59ca56c0af79b80043c5faba81bfebf290",
       "size_bytes": 6219261,
       "required_by": "pipeline-live.yaml"

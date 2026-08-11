@@ -122,7 +122,7 @@ def _runtime_image() -> modal.Image:
         .env(
             {
                 "PIPELINE_CONFIG": f"{REMOTE_ROOT}/configs/pipeline-live.yaml",
-                "GENDER_MODEL_PATH": f"{REMOTE_ROOT}/artifacts/gender_classifier/best_model.pth",
+                "GENDER_MODEL_PATH": f"{REMOTE_ROOT}/artifacts/gender_classifier/face_gender_classifier_mobilenet_v3_large.pth",
                 # API-only Modal deployment: one manager owns the one active
                 # pipeline. `app.py` is intentionally not mounted here.
                 "API_MAX_LIVE_SESSIONS": "1",
@@ -164,12 +164,12 @@ def _runtime_image() -> modal.Image:
         )
         .add_local_file(
             model_assets["gender_classifier"],
-            remote_path=f"{REMOTE_ROOT}/artifacts/gender_classifier/best_model.pth",
+            remote_path=f"{REMOTE_ROOT}/artifacts/gender_classifier/face_gender_classifier_mobilenet_v3_large.pth",
             copy=True,
         )
         .add_local_file(
             model_assets["body_gender_classifier"],
-            remote_path=f"{REMOTE_ROOT}/artifacts/body_gender_classifier/best_body_gender_model.pth",
+            remote_path=f"{REMOTE_ROOT}/artifacts/body_gender_classifier/body_gender_classifier_mobilenet_v3_small.pth",
             copy=True,
         )
     )
