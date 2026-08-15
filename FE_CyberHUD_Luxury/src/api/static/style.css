@@ -343,6 +343,10 @@ html, body {
   z-index: 6;
 }
 
+.bbox-overlay {
+  z-index: 7;
+}
+
 .radar-sweeper {
   position: absolute;
   top: 0; left: 0; right: 0; bottom: 0;

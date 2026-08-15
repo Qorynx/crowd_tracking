@@ -16,6 +16,11 @@ document.addEventListener('DOMContentLoaded', () => {
   const webcamVideo = document.getElementById('webcamVideo');
   const outputCanvas = document.getElementById('outputCanvas');
   const canvasCtx = outputCanvas.getContext('2d');
+  const videoWrapper = webcamVideo.closest('.hud-video-wrapper');
+  // Keep capture and display surfaces separate. The camera <video> remains
+  // local and smooth; this canvas only contains lightweight AI overlays.
+  const captureCanvas = document.createElement('canvas');
+  const captureCtx = captureCanvas.getContext('2d', { alpha: false });
   const fileDropzone = document.getElementById('fileDropzone');
   const fileInput = document.getElementById('fileInput');
 
@@ -149,18 +154,18 @@ document.addEventListener('DOMContentLoaded', () => {
   // State Variables
   let isStreaming = false;
   let activeMode = 'camera'; // 'camera' or 'file'
-  let facingMode = 'user'; // 'user' (Front) or 'environment' (Back)
+  let facingMode = 'environment'; // 'user' (Front) or 'environment' (Back)
   let mediaStream = null;
   let frameIntervalTimer = null;
   let frameRequestInFlight = false;
   let sessionID = null;
-  let lastFrameTime = 0;
   let lastRenderedSequence = 0;
+  let lastOverlayRenderTime = 0;
 
   // Keep the mobile/tunnel payload bounded.  The browser may still expose a
   // 1080p/4K camera even when 640x480 is only an `ideal` constraint, so the
   // capture canvas is explicitly downscaled before JPEG encoding.
-  const FRAME_INTERVAL_MS = 300;
+  const FRAME_INTERVAL_MS = 150;
   const MAX_CAPTURE_WIDTH = 640;
   const MAX_CAPTURE_HEIGHT = 480;
   const JPEG_QUALITY = 0.65;
@@ -265,7 +270,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
       isStreaming = true;
       lastRenderedSequence = 0;
-      lastFrameTime = 0;
+      lastOverlayRenderTime = 0;
       btnStartStream.disabled = true;
       btnStopStream.disabled = false;
       connectionStatus.className = 'hud-status-badge badge-online';
@@ -308,7 +313,8 @@ document.addEventListener('DOMContentLoaded', () => {
     connectionStatus.querySelector('.status-label').innerText = 'STOPPED';
     radarSweeper.classList.remove('active');
 
-    canvasCtx.clearRect(0, 0, outputCanvas.width, outputCanvas.height);
+    clearOverlay();
+    lastOverlayRenderTime = 0;
     addLog('Đã dừng Stream.', 'warn');
   }
 
@@ -330,6 +336,90 @@ document.addEventListener('DOMContentLoaded', () => {
     return new Promise((resolve) => canvas.toBlob(resolve, type, quality));
   }
 
+  function resizeOverlayCanvas() {
+    if (!videoWrapper) return;
+    const rect = videoWrapper.getBoundingClientRect();
+    const width = Math.max(1, Math.round(rect.width));
+    const height = Math.max(1, Math.round(rect.height));
+    if (outputCanvas.width !== width || outputCanvas.height !== height) {
+      outputCanvas.width = width;
+      outputCanvas.height = height;
+    }
+  }
+
+  function clearOverlay() {
+    resizeOverlayCanvas();
+    canvasCtx.clearRect(0, 0, outputCanvas.width, outputCanvas.height);
+  }
+
+  function overlayColor(gender) {
+    if (gender === 'female') return '#cbc0ff';
+    if (gender === 'male') return '#ff8000';
+    return '#00f2fe';
+  }
+
+  function drawOverlay(overlay) {
+    if (!overlay || !Array.isArray(overlay.tracks)) return;
+    resizeOverlayCanvas();
+
+    const [frameWidth, frameHeight] = overlay.frame_size || [];
+    const viewportWidth = outputCanvas.width;
+    const viewportHeight = outputCanvas.height;
+    if (!frameWidth || !frameHeight || !viewportWidth || !viewportHeight) return;
+
+    // The video uses object-fit: cover. Map processed-frame coordinates to the
+    // displayed/cropped video rectangle so portrait iPhone frames stay aligned.
+    const scale = Math.max(viewportWidth / frameWidth, viewportHeight / frameHeight);
+    const displayedWidth = frameWidth * scale;
+    const displayedHeight = frameHeight * scale;
+    const offsetX = (viewportWidth - displayedWidth) / 2;
+    const offsetY = (viewportHeight - displayedHeight) / 2;
+
+    canvasCtx.clearRect(0, 0, viewportWidth, viewportHeight);
+    canvasCtx.save();
+    canvasCtx.lineWidth = 2;
+    canvasCtx.font = '600 12px Rajdhani, sans-serif';
+    canvasCtx.textBaseline = 'top';
+
+    overlay.tracks.forEach((track) => {
+      if (!Array.isArray(track.bbox) || track.bbox.length !== 4) return;
+      const [x1, y1, x2, y2] = track.bbox.map(Number);
+      const left = offsetX + x1 * scale;
+      const top = offsetY + y1 * scale;
+      const width = Math.max(1, (x2 - x1) * scale);
+      const height = Math.max(1, (y2 - y1) * scale);
+      const color = overlayColor(track.gender);
+      const label = String(track.label || `T${track.track_id ?? '?'}`);
+
+      canvasCtx.strokeStyle = color;
+      canvasCtx.shadowColor = color;
+      canvasCtx.shadowBlur = 8;
+      canvasCtx.strokeRect(left, top, width, height);
+      canvasCtx.shadowBlur = 0;
+
+      const labelWidth = Math.min(viewportWidth - 8, canvasCtx.measureText(label).width + 10);
+      const labelTop = Math.max(2, top - 19);
+      canvasCtx.fillStyle = 'rgba(3, 5, 10, 0.82)';
+      canvasCtx.fillRect(Math.max(2, left), labelTop, labelWidth, 17);
+      canvasCtx.fillStyle = color;
+      canvasCtx.fillText(label, Math.max(6, left + 5), labelTop + 2);
+    });
+
+    canvasCtx.restore();
+    const now = performance.now();
+    if (lastOverlayRenderTime > 0) {
+      valFps.innerText = (1000 / (now - lastOverlayRenderTime)).toFixed(1);
+    }
+    lastOverlayRenderTime = now;
+  }
+
+  window.addEventListener('resize', resizeOverlayCanvas);
+  webcamVideo.addEventListener('loadedmetadata', resizeOverlayCanvas);
+  if (typeof ResizeObserver !== 'undefined' && videoWrapper) {
+    new ResizeObserver(resizeOverlayCanvas).observe(videoWrapper);
+  }
+  resizeOverlayCanvas();
+
   // Frame Capture & API Transmission Loop.  The next frame is scheduled only
   // after the previous request completes, preventing tunnel/API requests from
   // piling up when inference or network RTT is slower than the target cadence.
@@ -346,19 +436,13 @@ document.addEventListener('DOMContentLoaded', () => {
       frameRequestInFlight = true;
       const cycleStart = performance.now();
       const dimensions = captureDimensions();
-      outputCanvas.width = dimensions.width;
-      outputCanvas.height = dimensions.height;
-      canvasCtx.drawImage(webcamVideo, 0, 0, dimensions.width, dimensions.height);
+      captureCanvas.width = dimensions.width;
+      captureCanvas.height = dimensions.height;
+      captureCtx.drawImage(webcamVideo, 0, 0, dimensions.width, dimensions.height);
 
       try {
-        const blob = await canvasToBlob(outputCanvas, 'image/jpeg', JPEG_QUALITY);
+        const blob = await canvasToBlob(captureCanvas, 'image/jpeg', JPEG_QUALITY);
         if (!blob || !isStreaming || !sessionID) return;
-
-        const now = performance.now();
-        if (lastFrameTime > 0) {
-          valFps.innerText = (1000 / (now - lastFrameTime)).toFixed(1);
-        }
-        lastFrameTime = now;
 
         const formData = new FormData();
         formData.append('file', blob, 'frame.jpg');
@@ -378,15 +462,9 @@ document.addEventListener('DOMContentLoaded', () => {
             lastRenderedSequence = data.result_sequence;
           }
 
-          // Render only when the backend has a newer annotation. This avoids
-          // repeatedly downloading/decoding the same base64 JPEG over tunnel.
-          if (data.annotated_frame) {
-            const img = new Image();
-            img.onload = () => {
-              if (isStreaming) canvasCtx.drawImage(img, 0, 0, outputCanvas.width, outputCanvas.height);
-            };
-            img.src = data.annotated_frame;
-          }
+          // The raw camera video never leaves the display path. Only draw the
+          // newest lightweight bbox metadata on the transparent canvas.
+          if (data.overlay) drawOverlay(data.overlay);
           updateAnalyticsUI(data.analytics);
         }
       } catch (e) {

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import base64
 from contextlib import asynccontextmanager
 from datetime import datetime
 import math
@@ -282,14 +281,22 @@ def create_api_app(
         has_new_result = result is not None and (
             after_sequence is None or result.sequence > after_sequence
         )
+        analytics_payload = None
+        overlay_payload = None
+        if has_new_result and result is not None and isinstance(result.stats, dict):
+            # Keep overlay as a separate compact channel so it is not duplicated
+            # inside the dashboard analytics envelope.
+            analytics_payload = dict(result.stats)
+            overlay_payload = analytics_payload.pop("overlay", None)
         response: dict[str, Any] = {
             "status": "accepted",
             "sequence": sequence,
             "result_sequence": result.sequence if result is not None else None,
-            # Avoid retransmitting the same large analytics/image payload while
-            # the model worker is still processing newer frames.
-            "analytics": result.stats if has_new_result else None,
-            "annotated_frame": _jpeg_data_url(result.annotated_frame) if has_new_result else None,
+            # The browser keeps the camera's raw <video> local and draws this
+            # lightweight metadata on a transparent canvas.  Do not send the
+            # full annotated JPEG back through the tunnel.
+            "analytics": analytics_payload,
+            "overlay": overlay_payload,
         }
         return _json_safe(response)
 
@@ -323,21 +330,6 @@ def create_api_app(
 
 def _error_response(status_code: int, code: str, message: str) -> JSONResponse:
     return JSONResponse(status_code=status_code, content={"detail": {"code": code, "message": message}})
-
-
-def _jpeg_data_url(frame: np.ndarray) -> str:
-    """Encode an annotated BGR frame for the static browser client."""
-
-    if frame is None or not isinstance(frame, np.ndarray) or frame.ndim != 3:
-        raise ValueError("Annotated frame must be a color image.")
-    encoded_ok, encoded = cv2.imencode(
-        ".jpg",
-        frame,
-        [int(cv2.IMWRITE_JPEG_QUALITY), 65],
-    )
-    if not encoded_ok:
-        raise ValueError("Could not encode annotated frame as JPEG.")
-    return "data:image/jpeg;base64," + base64.b64encode(encoded.tobytes()).decode("ascii")
 
 
 def _json_safe(value: Any) -> Any:

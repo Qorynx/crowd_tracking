@@ -417,6 +417,23 @@ class CrowdGenderPipeline:
             crossing_statistics,
             spatial,
         )
+        overlay_tracks = []
+        for track_id, bbox in sorted(active_tracks.items()):
+            gender, confidence = self.tsm.get_gender(track_id)
+            source = self.tsm.get_gender_source(track_id)
+            person_id = person_ids.get(track_id)
+            person_label = self.stream_state.person_identity.display_label(person_id)
+            overlay_tracks.append(
+                {
+                    "track_id": int(track_id),
+                    "person_id": int(person_id) if person_id is not None else None,
+                    "label": f"{person_label} | T{track_id} | {source}: {gender}",
+                    "bbox": [int(value) for value in bbox],
+                    "gender": str(gender),
+                    "source": str(source),
+                    "confidence": round(float(confidence), 3),
+                }
+            )
         stats = {
             "identity": self.stream_state.person_identity_statistics(),
             "attributes": self.stream_state.attribute_branch.summarize(active_ids),
@@ -427,6 +444,15 @@ class CrowdGenderPipeline:
             "space": space_statistics,
             "history": history_statistics,
             "classroom": classroom_statistics,
+            # The static CyberHUD client draws this lightweight metadata over
+            # its local <video>. Coordinates belong to the processed frame,
+            # not to the browser viewport, so the client can account for
+            # object-fit/crop and portrait camera dimensions explicitly.
+            "overlay": {
+                "coordinate_space": "processed_frame",
+                "frame_size": [int(frame.shape[1]), int(frame.shape[0])],
+                "tracks": overlay_tracks,
+            },
             # Compatibility field retained for callers that used the original ZoneManager response.
             "zones": spatial["zones"],
             "runtime": {
