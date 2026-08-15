@@ -501,6 +501,13 @@ class ModelRuntime:
         self._detector_mode_lock: tuple[bool | None, int] | None = None
         self._effective_end2end: bool | None = None
         self._detector_callback_registered = False
+        self._last_body_classifier_timing_ms: dict[str, float | int] = {
+            "batch_size": 0,
+            "preprocess": 0.0,
+            "transfer": 0.0,
+            "model_and_output_transfer": 0.0,
+            "total": 0.0,
+        }
         self._reset_detector_telemetry()
         self._init_yolo()
         if self.face_enabled:
@@ -993,9 +1000,11 @@ class ModelRuntime:
             return
         body_config = self.config.get("body_gender_classifier", {})
         maximum_batch_size = max(1, int(body_config.get("max_body_tracks_per_frame", 1)))
-        # CUDA/cuDNN can initialize a separate execution path for batch 1 and the
-        # configured maximum. The scheduler regularly emits either shape, so warm both.
-        for batch_size in sorted({1, maximum_batch_size}):
+        # CUDA/cuDNN can initialize a separate execution path for each small batch
+        # shape. The scheduler can emit any size from one to the configured cap,
+        # so warming only batch 1 and the maximum still leaves a first-use spike
+        # for batch 2/3 (the common crowd case).
+        for batch_size in range(1, maximum_batch_size + 1):
             warmup_batch = torch.zeros((batch_size, 3, input_height, input_width), device=self.device)
             with torch.inference_mode(), self._autocast_context():
                 self.body_model(warmup_batch)
@@ -1047,8 +1056,26 @@ class ModelRuntime:
             self._record_post_tracker_summary(results, active_track_count=0, outer_track_ms=track_elapsed_ms)
             return active_tracks
         frame_height, frame_width = frame.shape[:2]
-        coordinates = results[0].boxes.xyxy.cpu().numpy()
-        ids = results[0].boxes.id.cpu().numpy().astype(int)
+        boxes = results[0].boxes
+        coordinates_tensor = boxes.xyxy
+        ids_tensor = boxes.id
+        # Coordinates and IDs are consumed together on the host. Packing them
+        # before the device transfer avoids two independent CUDA synchronization
+        # points on every frame while preserving the exact public track mapping.
+        if isinstance(coordinates_tensor, torch.Tensor) and isinstance(ids_tensor, torch.Tensor):
+            packed = torch.cat(
+                (
+                    coordinates_tensor,
+                    ids_tensor.reshape(-1, 1).to(dtype=coordinates_tensor.dtype),
+                ),
+                dim=1,
+            )
+            packed_numpy = packed.detach().cpu().numpy()
+            coordinates = packed_numpy[:, :4]
+            ids = packed_numpy[:, 4].astype(int)
+        else:
+            coordinates = coordinates_tensor.cpu().numpy()
+            ids = ids_tensor.cpu().numpy().astype(int)
         for track_id, bbox in zip(ids, coordinates):
             clipped = _clip_bbox(bbox, frame_width, frame_height)
             if clipped is not None:
@@ -1189,8 +1216,17 @@ class ModelRuntime:
             if self.use_horizontal_tta:
                 logits = (logits + self.gender_model(torch.flip(batch, dims=[3]))) / 2.0
             probabilities = torch.softmax(logits, dim=1)
-        logits_np = logits.float().cpu().numpy()
-        confidences = probabilities.max(dim=1).values.float().cpu().numpy()
+        # Return logits and confidence in one host transfer. The previous two
+        # ``.cpu()`` calls each forced a CUDA synchronization for tiny batches.
+        output = torch.cat(
+            (
+                logits.float(),
+                probabilities.max(dim=1).values.float().unsqueeze(1),
+            ),
+            dim=1,
+        ).detach().cpu().numpy()
+        logits_np = output[:, :-1]
+        confidences = output[:, -1]
         return map_gender_batch(candidates, logits_np, confidences)
 
     def extract_body_gender_candidate(
@@ -1219,17 +1255,50 @@ class ModelRuntime:
     def classify_body_gender_batch(self, candidates: list[BodyGenderCandidate]) -> list[BodyGenderEvidence]:
         """Classify one bounded body-fallback batch with calibrated confidence."""
         if not candidates:
+            self._last_body_classifier_timing_ms = {
+                "batch_size": 0,
+                "preprocess": 0.0,
+                "transfer": 0.0,
+                "model_and_output_transfer": 0.0,
+                "total": 0.0,
+            }
             return []
         if not self.body_enabled or self.body_model is None or self.body_transform is None:
             raise RuntimeError("Body gender inference was requested while the body branch is disabled.")
+        started = perf_counter()
         tensors = [
             self.body_transform(Image.fromarray(cv2.cvtColor(candidate.crop, cv2.COLOR_BGR2RGB)))
             for candidate in candidates
         ]
+        after_preprocess = perf_counter()
         batch = torch.stack(tensors).to(self.device, non_blocking=self.device.type == "cuda")
+        after_transfer = perf_counter()
         with torch.inference_mode(), self._autocast_context():
             calibrated_logits = self.body_model(batch) / self.body_temperature
             probabilities = torch.softmax(calibrated_logits, dim=1)
-        logits_np = calibrated_logits.float().cpu().numpy()
-        confidences = probabilities.max(dim=1).values.float().cpu().numpy()
+        # Keep logits and confidence together until the single device-to-host
+        # transfer. This is especially useful here because body fallback batches
+        # are intentionally small (usually one or two crops).
+        output = torch.cat(
+            (
+                calibrated_logits.float(),
+                probabilities.max(dim=1).values.float().unsqueeze(1),
+            ),
+            dim=1,
+        ).detach().cpu().numpy()
+        after_output_transfer = perf_counter()
+        self._last_body_classifier_timing_ms = {
+            "batch_size": len(candidates),
+            "preprocess": round((after_preprocess - started) * 1_000, 3),
+            "transfer": round((after_transfer - after_preprocess) * 1_000, 3),
+            "model_and_output_transfer": round((after_output_transfer - after_transfer) * 1_000, 3),
+            "total": round((after_output_transfer - started) * 1_000, 3),
+        }
+        logits_np = output[:, :-1]
+        confidences = output[:, -1]
         return map_body_gender_batch(candidates, logits_np, confidences)
+
+    def body_classifier_statistics(self) -> dict[str, float | int]:
+        """Expose the latest bounded body-batch timing breakdown for profiling."""
+
+        return dict(self._last_body_classifier_timing_ms)

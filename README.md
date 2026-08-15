@@ -6,8 +6,8 @@ Production-ready demo for webcam and short-video crowd analytics.
 YOLO11n -> FastTracker -> session-scoped person_id -> visual-presentation evidence -> crowd analytics
 ```
 
-The selected live pipeline is FastTracker in `configs/pipeline-live.yaml`. It
-keeps tracking state per stream and adds a conservative, session-scoped
+The selected live pipeline is FastTracker with the default room profile in
+`configs/pipeline-classroom-template.yaml`. It keeps tracking state per stream and adds a conservative, session-scoped
 `person_id` above tracker-local IDs. A person ID is not biometric identity and
 is cleared when a session resets or expires.
 
@@ -50,9 +50,15 @@ python -m venv .venv
 .\.venv\Scripts\python.exe app.py
 ```
 
-`app.py` opens the local Gradio demo. It uses `configs/pipeline-live.yaml` by
-default. Copy `.env.example` to `.env` only when environment-specific paths or
+`app.py` opens the local Gradio demo. It uses
+`configs/pipeline-classroom-template.yaml` by default. Copy `.env.example` to `.env` only when environment-specific paths or
 limits need to change.
+
+The default room session uses the `lecture_2_4_2` layout: four rows with
+2-left / 4-center / 2-right seats, for 32 configurable session seats. The
+room's visible floor area is 64 m², while formal room capacity remains unset;
+seat polygons still need to be traced from the camera view before seat
+occupancy is reported.
 
 ## FastAPI demo
 

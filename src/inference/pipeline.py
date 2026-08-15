@@ -400,11 +400,15 @@ class CrowdGenderPipeline:
             event_timestamp,
         )
         finalized = self.stream_state.finalize_stale_tracks(event_timestamp)
-        # Finalisation transfers zone dwell into compact aggregates. Read the
-        # engines again so the same frame's report includes completed dwell
-        # and a released seat assignment for a finalized track.
-        spatial = self.stream_state.spatial_engine.get_statistics()
-        classroom_statistics = self.stream_state.classroom_statistics()
+        # ``update`` already returns the current snapshots. Finalization only
+        # changes those snapshots when a stale track is actually consumed;
+        # avoid rebuilding heatmap/zone/classroom payloads on every frame.
+        if finalized:
+            # Finalisation transfers zone dwell into compact aggregates. Read
+            # the engines again so this frame includes completed dwell and a
+            # released seat assignment for a finalized track.
+            spatial = self.stream_state.spatial_engine.get_statistics()
+            classroom_statistics = self.stream_state.classroom_statistics()
         crowd_statistics = self.people_counter.get_statistics(active_ids)
         crossing_statistics = self.line_counter.get_counts()
         space_statistics, history_statistics = self.stream_state.update_space_and_history(
@@ -434,6 +438,11 @@ class CrowdGenderPipeline:
                 ),
                 "gender_batch_size": self._last_gender_batch_size,
                 "body_gender_batch_size": self._last_body_gender_batch_size,
+                "body_classifier_timing": (
+                    self.runtime.body_classifier_statistics()
+                    if callable(getattr(self.runtime, "body_classifier_statistics", None))
+                    else {}
+                ),
                 "attribute_router": self.stream_state.attribute_router_statistics(),
                 "active_track_states": len(self.tsm.track_states),
                 "finalized_this_frame": len(finalized),

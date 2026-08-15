@@ -228,14 +228,12 @@ class SpatialEngine:
                 "total_weight": round(float(self._heatmap.sum()), 3),
                 "peak_cell": [int(peak_index[1]), int(peak_index[0])],
                 "peak_value": round(float(self._heatmap[peak_index]), 3),
-                "values": [[round(float(value), 3) for value in row] for row in self._heatmap],
+                "values": np.round(self._heatmap, 3).tolist(),
                 "accumulated": {
                     "total_weight": round(float(self._accumulated_heatmap.sum()), 3),
                     "peak_cell": [int(accumulated_peak_index[1]), int(accumulated_peak_index[0])],
                     "peak_value": round(float(self._accumulated_heatmap[accumulated_peak_index]), 3),
-                    "values": [
-                        [round(float(value), 3) for value in row] for row in self._accumulated_heatmap
-                    ],
+                    "values": np.round(self._accumulated_heatmap, 3).tolist(),
                 },
             },
         }

@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import base64
 from contextlib import asynccontextmanager
 from datetime import datetime
 import math
 from pathlib import Path
+from time import monotonic
 from typing import Any
 
+import cv2
 import numpy as np
-from fastapi import FastAPI, File, Form, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import JSONResponse, RedirectResponse, Response
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from src.api.config import ApiSettings
@@ -37,6 +41,8 @@ from src.api.webrtc import WebRTCPeerRegistry, create_webrtc_router
 
 
 API_PREFIX = "/api/v1"
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+FRONTEND_STATIC_DIR = PROJECT_ROOT / "FE_CyberHUD_Luxury" / "src" / "api" / "static"
 
 
 class CreateSessionRequest(BaseModel):
@@ -95,6 +101,9 @@ def create_api_app(
             # releases any REST-only sessions that have no peer record.
             await webrtc_peers.close_all()
             manager.close_all()
+            close_analyzer = getattr(analyzer, "close", None)
+            if callable(close_analyzer):
+                close_analyzer()
 
     app = FastAPI(
         title="Crowd Analytics Demo API",
@@ -109,6 +118,10 @@ def create_api_app(
     app.state.session_manager = manager
     app.state.video_analyzer = analyzer
     app.state.webrtc_peers = webrtc_peers
+    if FRONTEND_STATIC_DIR.is_dir():
+        # The CyberHUD frontend is a static same-origin client. Mounting it
+        # under /app keeps its relative /api/v1 requests on this FastAPI app.
+        app.mount("/app", StaticFiles(directory=FRONTEND_STATIC_DIR, html=True), name="cyberhud_frontend")
     app.include_router(
         create_webrtc_router(
             manager,
@@ -239,6 +252,47 @@ def create_api_app(
         manager.close(session_id)
         return Response(status_code=204)
 
+    @app.post(f"{API_PREFIX}/sessions/{{session_id}}/frame", tags=["sessions"])
+    async def submit_session_frame(
+        session_id: str,
+        file: UploadFile = File(..., description="JPEG/PNG frame captured by the browser camera."),
+        after_sequence: int | None = Query(
+            default=None,
+            ge=0,
+            description="Only include an annotated image when a newer result exists.",
+        ),
+    ) -> dict[str, Any]:
+        """Accept one browser frame and return the newest completed annotation.
+
+        The model worker remains asynchronous and latest-frame-only.  The
+        response can therefore contain the previous completed result while the
+        submitted frame is being processed; the next request receives the
+        newer annotation without building a stale request queue.
+        """
+
+        payload = await file.read()
+        if not payload:
+            raise HTTPException(status_code=400, detail="The uploaded frame is empty.")
+        frame = cv2.imdecode(np.frombuffer(payload, dtype=np.uint8), cv2.IMREAD_COLOR)
+        if frame is None or frame.ndim != 3:
+            raise HTTPException(status_code=415, detail="The uploaded frame is not a supported image.")
+
+        sequence = manager.submit_frame(session_id, frame, submitted_at=monotonic())
+        result = manager.latest_result(session_id)
+        has_new_result = result is not None and (
+            after_sequence is None or result.sequence > after_sequence
+        )
+        response: dict[str, Any] = {
+            "status": "accepted",
+            "sequence": sequence,
+            "result_sequence": result.sequence if result is not None else None,
+            # Avoid retransmitting the same large analytics/image payload while
+            # the model worker is still processing newer frames.
+            "analytics": result.stats if has_new_result else None,
+            "annotated_frame": _jpeg_data_url(result.annotated_frame) if has_new_result else None,
+        }
+        return _json_safe(response)
+
     @app.post(f"{API_PREFIX}/video/analyze", tags=["video"])
     def analyze_short_video(
         file: UploadFile = File(..., description="Short video clip; default demo limit is 60 seconds / 64 MiB."),
@@ -246,10 +300,11 @@ def create_api_app(
     ) -> dict[str, Any]:
         """Synchronous short-clip fallback; it never changes a live session's tracker."""
 
-        # A clip uses a fresh model/tracker state.  The demo intentionally has
-        # one GPU/session budget, so do not compete with an active WebRTC or
-        # REST live stream. Modal additionally serializes requests at one
-        # input; this check gives other ASGI deployments the same safe signal.
+        # A clip uses a reset tracker/analytics state with warm model weights.
+        # The demo intentionally has one GPU/session budget, so do not compete
+        # with an active WebRTC or REST live stream. Modal additionally
+        # serializes requests at one input; this check gives other ASGI
+        # deployments the same safe signal.
         active_sessions = int(manager.health().get("active_sessions", 0))
         if active_sessions:
             raise VideoAnalysisBusyError(
@@ -268,6 +323,21 @@ def create_api_app(
 
 def _error_response(status_code: int, code: str, message: str) -> JSONResponse:
     return JSONResponse(status_code=status_code, content={"detail": {"code": code, "message": message}})
+
+
+def _jpeg_data_url(frame: np.ndarray) -> str:
+    """Encode an annotated BGR frame for the static browser client."""
+
+    if frame is None or not isinstance(frame, np.ndarray) or frame.ndim != 3:
+        raise ValueError("Annotated frame must be a color image.")
+    encoded_ok, encoded = cv2.imencode(
+        ".jpg",
+        frame,
+        [int(cv2.IMWRITE_JPEG_QUALITY), 65],
+    )
+    if not encoded_ok:
+        raise ValueError("Could not encode annotated frame as JPEG.")
+    return "data:image/jpeg;base64," + base64.b64encode(encoded.tobytes()).decode("ascii")
 
 
 def _json_safe(value: Any) -> Any:
