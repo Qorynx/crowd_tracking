@@ -8,7 +8,7 @@ from typing import Any
 
 from src.analytics.attributes import AttributeBranch
 from src.analytics.classroom import ClassroomAnalytics
-from src.analytics.classroom_config import ClassroomConfig, SessionLayout, parse_classroom_config
+from src.analytics.classroom_config import ClassroomConfig, RoomProfile, SessionLayout, parse_classroom_config
 from src.analytics.history import HistoryEngine
 from src.analytics.line_crossing import LineCrossingCounter
 from src.analytics.people_counter import PeopleCounter
@@ -926,6 +926,26 @@ class CrowdStreamState:
         # stay alive for the webcam session.
         self.classroom_analytics = ClassroomAnalytics(self.classroom_config, **self._classroom_engine_options)
         self._classroom_layout_revision += 1
+        return self.classroom_statistics()
+
+    def apply_room_calibration(self, calibration: Mapping[str, Any]) -> dict[str, object]:
+        """Update camera-floor correspondences for this session only.
+
+        Calibration is metadata consumed by the classroom/space reporting
+        branch.  It deliberately does not reload models or reset tracker
+        identity state; the live worker serializes this mutation at the API
+        boundary.
+        """
+
+        if self.classroom_config is None:
+            raise RuntimeError("A configured classroom room_profile is required before applying calibration.")
+        if not isinstance(calibration, Mapping):
+            raise ValueError("calibration must be a mapping.")
+        profile_values = self.classroom_config.room_profile.to_mapping()
+        profile_values["calibration"] = dict(calibration)
+        updated_profile = RoomProfile.from_mapping(profile_values, source="classroom.room_profile")
+        self.classroom_config = replace(self.classroom_config, room_profile=updated_profile)
+        self.classroom_analytics = ClassroomAnalytics(self.classroom_config, **self._classroom_engine_options)
         return self.classroom_statistics()
 
     def finalize_stale_tracks(self, timestamp_seconds: float | None = None) -> list[FinalizedTrack]:

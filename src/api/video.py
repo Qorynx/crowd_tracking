@@ -11,6 +11,7 @@ from __future__ import annotations
 from contextlib import suppress
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from threading import RLock
 from time import perf_counter
 from typing import Any, BinaryIO, Callable, Protocol
 
@@ -56,7 +57,12 @@ class VideoAnalyzer(Protocol):
 
 
 class ShortVideoAnalyzer:
-    """Analyze one bounded upload with fresh per-video tracker state."""
+    """Analyze bounded uploads through one warm pipeline per allowed mode.
+
+    The model weights stay resident between clips, while ``reset`` clears the
+    tracker and analytics state before the next clip. A lock serializes jobs so
+    a shared stateful pipeline is never touched by two uploads concurrently.
+    """
 
     _SUPPORTED_SUFFIXES = frozenset({".mp4", ".mov", ".avi", ".mkv", ".webm"})
     _CHUNK_BYTES = 1_024 * 1_024
@@ -81,6 +87,8 @@ class ShortVideoAnalyzer:
         self._max_bytes = int(max_bytes)
         self._max_seconds = float(max_seconds)
         self._max_frames = int(max_frames)
+        self._pipeline_lock = RLock()
+        self._pipelines: dict[str, LivePipeline] = {}
 
     def analyze(
         self,
@@ -95,7 +103,11 @@ class ShortVideoAnalyzer:
         with TemporaryDirectory(prefix="crowd_api_video_") as temporary_directory:
             source_path = Path(temporary_directory) / f"upload{suffix}"
             received_bytes = self._copy_upload(stream, source_path)
-            return self._process_file(source_path, normalized_mode, received_bytes)
+            # A pipeline owns persistent tracker state and GPU model objects.
+            # Serialize the whole clip, not only pipeline acquisition, so a
+            # reused instance cannot be mutated by concurrent requests.
+            with self._pipeline_lock:
+                return self._process_file(source_path, normalized_mode, received_bytes)
 
     def _process_file(self, source_path: Path, mode: str, received_bytes: int) -> dict[str, Any]:
         capture = cv2.VideoCapture(str(source_path))
@@ -117,7 +129,7 @@ class ShortVideoAnalyzer:
                     f"The uploaded video has {reported_frames} frames; demo limit is {self._max_frames}."
                 )
 
-            pipeline = self._pipeline_factory(mode)
+            pipeline = self._pipeline_for_mode(mode)
             started_at = perf_counter()
             frames_processed = 0
             last_stats: dict[str, Any] | None = None
@@ -158,19 +170,40 @@ class ShortVideoAnalyzer:
                 "analytics": last_stats,
                 "artifacts": {
                     "annotated_video_url": None,
-                    "note": "The bounded demo endpoint returns analytics only; WebRTC renders live annotated video.",
+                    "note": "The bounded demo endpoint returns analytics only; live WebRTC is send-only and the browser renders metadata overlays locally.",
                 },
             }
         finally:
             capture.release()
             if pipeline is not None:
-                close = getattr(pipeline, "close", None)
+                # Keep model weights warm for the next clip. Reset is performed
+                # after every job as well as before acquisition, so a failed
+                # upload cannot leak tracker/analytics state into the next one.
+                with suppress(Exception):
+                    pipeline.reset()
+
+    def _pipeline_for_mode(self, mode: str) -> LivePipeline:
+        pipeline = self._pipelines.get(mode)
+        if pipeline is None:
+            pipeline = self._pipeline_factory(mode)
+            self._pipelines[mode] = pipeline
+        else:
+            pipeline.reset()
+        return pipeline
+
+    def close(self) -> None:
+        """Release all warm upload pipelines during API shutdown."""
+
+        with self._pipeline_lock:
+            pipelines = list(self._pipelines.values())
+            self._pipelines.clear()
+        for pipeline in pipelines:
+            close = getattr(pipeline, "close", None)
+            with suppress(Exception):
                 if callable(close):
-                    with suppress(Exception):
-                        close()
+                    close()
                 else:
-                    with suppress(Exception):
-                        pipeline.reset()
+                    pipeline.reset()
 
     def _copy_upload(self, stream: BinaryIO, target_path: Path) -> int:
         with suppress(Exception):

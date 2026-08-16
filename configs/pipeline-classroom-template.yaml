@@ -11,23 +11,26 @@ analytics:
   counting_line: null
 
 space:
-  name: replace_with_camera_name
-  # Only set this when the camera sees the entire measured floor area.  A
-  # 64 m² room with a partial camera view must not report people/m² as 64 m².
-  # visible_floor_area_m2: 64.0
+  name: default_room
+  # The demo room is calibrated as a 64 m² visible floor area.  This is kept
+  # separate from the session's 32 default seats and from formal capacity.
+  visible_floor_area_m2: 64.0
   # maximum_capacity: 50
+  # After camera calibration, trace semantic zones as: Front = row 1,
+  # Middle = rows 2-3, Back = row 4.  Leave polygons empty until their
+  # reference-frame coordinates are measured from the actual camera view.
   zones: []
   counting_lines: []
 
 classroom:
   enabled: true
   room_profile:
-    name: replace_with_camera_name
+    name: default_room
     camera:
       reference_resolution: [640, 480]
     # Repeat measured values here only when also set in `space` above; the
     # runtime rejects conflicting physical calibration for one camera.
-    # visible_floor_area_m2: 64.0
+    visible_floor_area_m2: 64.0
     # maximum_capacity: 50
     layout_rules:
       minimum_row_gap_m: 0.70
@@ -43,6 +46,8 @@ classroom:
   layout_templates:
     - name: lecture_2_4_2
       blocks: {left: 2, center: 4, right: 2}
+      # Default demo layout: left 2, aisle, center 4, aisle, right 2.
+      # Four rows below therefore produce 8 x 4 = 32 session seats.
       # Trace the visible seating plane in this camera's reference frame.
       # The point order is top-left, top-right, bottom-right, bottom-left.
       # reference_grid:
@@ -54,9 +59,9 @@ classroom:
   # This remains dynamic: change rows or disable individual seats per class
   # without reloading YOLO, FastTracker, or either attribute classifier.
   session_layout:
-    room_profile: replace_with_camera_name
+    room_profile: default_room
     template: lecture_2_4_2
-    rows: 5
+    rows: 4
     disabled_seats: []
 
   seat_occupancy:

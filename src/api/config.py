@@ -48,6 +48,18 @@ def _nonnegative_float_from_environment(name: str, default: float) -> float:
     return value
 
 
+def _frontend_origins_from_environment() -> tuple[str, ...]:
+    """Return explicit browser origins without ever enabling wildcard CORS."""
+
+    defaults = ["http://localhost:3000", "http://127.0.0.1:3000"]
+    configured = os.getenv("FRONTEND_ORIGINS", os.getenv("FRONTEND_ORIGIN", ""))
+    origins = [origin.strip().rstrip("/") for origin in configured.split(",") if origin.strip()]
+    combined = list(dict.fromkeys([*defaults, *origins]))
+    if "*" in combined:
+        raise ValueError("FRONTEND_ORIGINS cannot contain '*'; configure explicit frontend origins.")
+    return tuple(combined)
+
+
 def _production_asset_status(
     project_root: Path,
     *,
@@ -153,6 +165,7 @@ class ApiSettings:
     default_pipeline_config: Path
     classroom_pipeline_config: Path
     gender_model_path: str | None = None
+    frontend_origins: tuple[str, ...] = ("http://localhost:3000", "http://127.0.0.1:3000")
     max_live_sessions: int = 1
     session_ttl_seconds: float = 600.0
     live_cadence_seconds: float = 0.15
@@ -173,6 +186,7 @@ class ApiSettings:
                 "CLASSROOM_PIPELINE_CONFIG", root / "configs" / "pipeline-classroom-template.yaml", root
             ),
             gender_model_path=os.getenv("GENDER_MODEL_PATH") or None,
+            frontend_origins=_frontend_origins_from_environment(),
             max_live_sessions=_positive_int_from_environment("API_MAX_LIVE_SESSIONS", 1),
             session_ttl_seconds=_nonnegative_float_from_environment("API_SESSION_TTL_SECONDS", 600.0),
             live_cadence_seconds=max(
@@ -216,7 +230,7 @@ class ApiSettings:
             }
         return {
             "ready": modes["default"]["ready"],
-            "model_initialization": "on_session_create",
+            "model_initialization": "background_warmup",
             "modes": modes,
             "production_asset_manifest": str(self.project_root / _PRODUCTION_ASSET_MANIFEST),
             "missing_model_assets": missing_assets,

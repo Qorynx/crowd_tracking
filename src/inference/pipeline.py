@@ -19,6 +19,8 @@ from src.inference.stream_state import CrowdStreamState, validate_tracker_state_
 from src.tracking.tracker_config import (
     TrackerProfile,
     load_tracker_profile,
+    materialize_tracker_runtime_config,
+    resolve_tracker_runtime_paths,
 )
 
 
@@ -83,6 +85,7 @@ class CrowdGenderPipeline:
         model_path: str | None = None,
         device: str | None = None,
         runtime: ModelRuntime | None = None,
+        defer_attribute_models: bool | None = None,
     ) -> None:
         self.config_path = Path(config_path).resolve()
         if not self.config_path.exists():
@@ -91,6 +94,11 @@ class CrowdGenderPipeline:
         self.config = _load_yaml(self.config_path)
         self.tracker_profile = load_tracker_profile(
             _resolve_path(self.config["tracker"]["config_path"], self.project_root)
+        )
+        self.tracker_profile = resolve_tracker_runtime_paths(self.tracker_profile, self.project_root)
+        self.tracker_profile = materialize_tracker_runtime_config(
+            self.tracker_profile,
+            self.project_root / ".runtime" / "tracker",
         )
         self.stream_state = CrowdStreamState(self.config)
         validate_tracker_state_retention(
@@ -126,6 +134,11 @@ class CrowdGenderPipeline:
                 gender_model_path=gender_model_path,
                 device=runtime_device,
                 tracker_profile=self.tracker_profile,
+                defer_attribute_models=(
+                    bool(self.config.get("runtime", {}).get("defer_attribute_models", False))
+                    if defer_attribute_models is None
+                    else bool(defer_attribute_models)
+                ),
             )
         else:
             if runtime.tracker_profile.path.resolve() != self.tracker_profile.path.resolve():
@@ -163,6 +176,11 @@ class CrowdGenderPipeline:
 
         return self.stream_state.apply_session_layout(session_layout)
 
+    def apply_room_calibration(self, calibration: dict[str, Any]) -> dict[str, object]:
+        """Apply session-scoped camera-floor calibration metadata."""
+
+        return self.stream_state.apply_room_calibration(calibration)
+
     def close(self) -> None:
         """Release this stream's tracker and analytics state."""
 
@@ -177,6 +195,42 @@ class CrowdGenderPipeline:
         frame = self._prepare_frame(np.zeros((reference_height, reference_width, 3), dtype=np.uint8))
         self.runtime.warmup(frame.shape[:2])
         self.reset()
+
+    def warmup_tracking(self) -> None:
+        """Warm YOLO/tracker only so live boxes can start before attributes."""
+
+        if not bool(self.config.get("runtime", {}).get("warmup_models", True)):
+            return
+        runtime_warmup = getattr(self.runtime, "warmup_tracking", None)
+        if callable(runtime_warmup):
+            runtime_warmup(self.stream_state.reference_size[::-1])
+        else:
+            self.warmup()
+        self.reset()
+
+    def warmup_attributes(self) -> None:
+        """Warm optional face/body attributes after the tracking path is live."""
+
+        if not bool(self.config.get("runtime", {}).get("warmup_models", True)):
+            return
+        runtime_warmup = getattr(self.runtime, "warmup_attributes", None)
+        if callable(runtime_warmup):
+            runtime_warmup(self.stream_state.reference_size[::-1])
+        # Attribute warm-up does not touch tracker state.  Do not reset here:
+        # the staged warm-up pipeline may already be owned by a live session
+        # and resetting would race with its first frames.
+
+    @property
+    def detector_ready(self) -> bool:
+        return bool(getattr(self.runtime, "detector_ready", True))
+
+    @property
+    def tracker_ready(self) -> bool:
+        return bool(getattr(self.runtime, "tracker_ready", True))
+
+    @property
+    def attributes_ready(self) -> bool:
+        return bool(getattr(self.runtime, "attributes_ready", True))
 
     @property
     def last_active_track_ids(self) -> tuple[int, ...]:
@@ -364,7 +418,14 @@ class CrowdGenderPipeline:
             event_timestamp,
         )
 
-        face_candidates, body_candidates = self._collect_gender_candidates(frame, active_tracks)
+        attributes_ready = self.attributes_ready
+        if attributes_ready:
+            face_candidates, body_candidates = self._collect_gender_candidates(frame, active_tracks)
+        else:
+            # Tracking/counting is intentionally useful while optional face/body
+            # models are loading in the background. The next frame after the
+            # attribute stage flips ready will resume normal evidence collection.
+            face_candidates, body_candidates = [], []
         after_face_detection = perf_counter()
         self._apply_gender_batch(face_candidates)
         after_face_classification = perf_counter()
@@ -400,11 +461,15 @@ class CrowdGenderPipeline:
             event_timestamp,
         )
         finalized = self.stream_state.finalize_stale_tracks(event_timestamp)
-        # Finalisation transfers zone dwell into compact aggregates. Read the
-        # engines again so the same frame's report includes completed dwell
-        # and a released seat assignment for a finalized track.
-        spatial = self.stream_state.spatial_engine.get_statistics()
-        classroom_statistics = self.stream_state.classroom_statistics()
+        # ``update`` already returns the current snapshots. Finalization only
+        # changes those snapshots when a stale track is actually consumed;
+        # avoid rebuilding heatmap/zone/classroom payloads on every frame.
+        if finalized:
+            # Finalisation transfers zone dwell into compact aggregates. Read
+            # the engines again so this frame includes completed dwell and a
+            # released seat assignment for a finalized track.
+            spatial = self.stream_state.spatial_engine.get_statistics()
+            classroom_statistics = self.stream_state.classroom_statistics()
         crowd_statistics = self.people_counter.get_statistics(active_ids)
         crossing_statistics = self.line_counter.get_counts()
         space_statistics, history_statistics = self.stream_state.update_space_and_history(
@@ -423,6 +488,11 @@ class CrowdGenderPipeline:
             "space": space_statistics,
             "history": history_statistics,
             "classroom": classroom_statistics,
+            # The independent React dashboard draws this lightweight metadata
+            # over its local <video>. Coordinates belong to the processed
+            # frame, not to the browser viewport, so the client can account
+            # for object-fit/crop and portrait camera dimensions explicitly.
+            "overlay": {},
             # Compatibility field retained for callers that used the original ZoneManager response.
             "zones": spatial["zones"],
             "runtime": {
@@ -434,6 +504,11 @@ class CrowdGenderPipeline:
                 ),
                 "gender_batch_size": self._last_gender_batch_size,
                 "body_gender_batch_size": self._last_body_gender_batch_size,
+                "body_classifier_timing": (
+                    self.runtime.body_classifier_statistics()
+                    if callable(getattr(self.runtime, "body_classifier_statistics", None))
+                    else {}
+                ),
                 "attribute_router": self.stream_state.attribute_router_statistics(),
                 "active_track_states": len(self.tsm.track_states),
                 "finalized_this_frame": len(finalized),
@@ -443,8 +518,40 @@ class CrowdGenderPipeline:
                     if self._last_timing_ms.get("total", 0.0) > 0.0
                     else 0.0
                 ),
+                "detector_ready": self.detector_ready,
+                "tracker_ready": self.tracker_ready,
+                "attributes_ready": attributes_ready,
             },
         }
+        overlay_tracks = []
+        trajectory_metrics = stats["trajectory"].get("active_tracks", {})
+        for track_id, bbox in sorted(active_tracks.items()):
+            gender, confidence = self.tsm.get_gender(track_id)
+            source = self.tsm.get_gender_source(track_id)
+            person_id = person_ids.get(track_id)
+            person_label = self.stream_state.person_identity.display_label(person_id)
+            motion = trajectory_metrics.get(str(track_id), {})
+            trajectory = self.tsm.get_trajectory(track_id)[-20:]
+            overlay_tracks.append(
+                {
+                    "track_id": int(track_id),
+                    "person_id": int(person_id) if person_id is not None else None,
+                    "label": f"{person_label} | T{track_id} | {source}: {gender}",
+                    "bbox": [int(value) for value in bbox],
+                    "gender": str(gender),
+                    "source": str(source),
+                    "confidence": round(float(confidence), 3),
+                    "motion": motion,
+                    "trajectory": [list(point) for point in trajectory],
+                }
+            )
+        overlay_payload: dict[str, Any] = {
+            "coordinate_space": "processed_frame",
+            "frame_size": [int(frame.shape[1]), int(frame.shape[0])],
+            "tracks": overlay_tracks,
+        }
+        overlay_payload.update(self._build_region_overlay(frame.shape[1::-1], stats))
+        stats["overlay"] = overlay_payload
         after_analytics = perf_counter()
         output = self._draw_results(frame, active_tracks, person_ids, stats, line_start, line_end)
         after_drawing = perf_counter()
@@ -462,6 +569,65 @@ class CrowdGenderPipeline:
         stats["runtime"]["timing_ms"] = self._last_timing_ms
         stats["runtime"]["processing_fps"] = round(1_000 / timing_ms["total"], 2) if timing_ms["total"] > 0 else 0.0
         return output, stats
+
+    def _build_region_overlay(self, frame_size: tuple[int, int], stats: dict[str, Any]) -> dict[str, Any]:
+        """Expose compact geometry for the browser canvas overlay.
+
+        The browser receives metadata, not an annotated JPEG.  Polygons are
+        scaled to the processed frame and contain only the fields needed for
+        drawing, keeping the response small and independent from the full
+        classroom/spatial analytics payload.
+        """
+
+        regions: dict[str, Any] = {}
+        analytics_config = self.config.get("analytics", {})
+        if (
+            bool(analytics_config.get("spatial", {}).get("enabled", True))
+            and bool(analytics_config.get("enable_zones", True))
+        ):
+            spatial = stats.get("spatial", {})
+            zone_stats = spatial.get("zones", {})
+            zones = []
+            for name, polygon in self.zone_manager.scaled_polygons(
+                frame_size, self.stream_state.reference_size
+            ).items():
+                state = zone_stats.get(name, {})
+                zones.append(
+                    {
+                        "name": str(name),
+                        "polygon": [[round(float(x), 2), round(float(y), 2)] for x, y in polygon],
+                        "current_count": int(state.get("current_count", 0)),
+                    }
+                )
+            regions["zones"] = zones
+
+        classroom_config = self.stream_state.classroom_config
+        if classroom_config is not None:
+            classroom = stats.get("classroom", {})
+            seat_stats = classroom.get("seats", {})
+            status_by_seat = {
+                str(item.get("seat_id")): str(item.get("status", "vacant"))
+                for item in seat_stats.get("seats", [])
+                if isinstance(item, dict) and item.get("seat_id") is not None
+            }
+            reference_size = classroom_config.room_profile.reference_resolution or self.stream_state.reference_size
+            seats = []
+            for seat in classroom_config.seat_definitions:
+                if seat.polygon is None:
+                    continue
+                seats.append(
+                    {
+                        "seat_id": str(seat.seat_id),
+                        "status": status_by_seat.get(seat.seat_id, "disabled" if not seat.enabled else "vacant"),
+                        "polygon": [
+                            [round(float(x), 2), round(float(y), 2)]
+                            for x, y in scale_polygon(seat.polygon, frame_size, reference_size)
+                        ],
+                    }
+                )
+            if seats:
+                regions["seats"] = seats
+        return regions
 
     def _draw_results(
         self,

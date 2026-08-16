@@ -41,14 +41,30 @@ automatic download cache.
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `GET` | `/api/v1/health` | Lightweight liveness and live-session capacity; never warms a model. |
-| `GET` | `/api/v1/ready` | Checks that the configured profiles are present. Models warm on session creation. |
+| `GET` | `/api/v1/ready` | Checks config/model assets only; it is not the runtime model-ready signal. |
+| `POST` | `/api/v1/warmup` | Starts an idempotent staged warm-up for a live mode and returns its current state. |
+| `GET` | `/api/v1/warmup?mode=classroom_demo` | Polls detector/tracker/attribute readiness without creating a session. |
 | `POST` | `/api/v1/sessions` | Creates a stateful tracker session for lifecycle/testing use. |
 | `GET` | `/api/v1/sessions/{session_id}` | Gets session metadata and remaining TTL. |
-| `GET` | `/api/v1/sessions/{session_id}/stats` | Gets the latest complete analytics/dashboard snapshot. |
+| `GET` | `/api/v1/sessions/{session_id}/stats` | Gets the latest complete analytics/dashboard snapshot for control/debug clients. |
+| `WebSocket` | `/api/v1/sessions/{session_id}/metadata` | Pushes each newer bbox/analytics snapshot for the live Canvas overlay. |
 | `POST` | `/api/v1/sessions/{session_id}/reset` | Clears FastTracker, `person_id`, counters, heatmap, and cadence telemetry. |
 | `DELETE` | `/api/v1/sessions/{session_id}` | Closes the live worker and releases its tracking state. |
 | `POST` | `/api/v1/webrtc/offer` | Self-hosted browser WebRTC signaling; creates the live session and returns the SDP answer. |
 | `POST` | `/api/v1/video/analyze` | Optional bounded short-video analysis fallback. |
+
+The production manager starts a background warm-up for `classroom_demo` during
+application startup and keeps the resulting pipeline in a one-slot warm pool.
+`POST /warmup` is still safe to call from a browser: it returns the existing
+state instead of loading a second copy. A live session claims that pipeline,
+resets only stream state, and returns it to the pool on `DELETE`.
+
+Warm-up is staged. `tracking_ready` means YOLO and FastTracker can accept live
+frames while `attributes_ready` is still false; face/body attributes are then
+warmed in the background. The React client shows camera/tracker/attributes
+steps rather than presenting the backend's approximate progress number as an
+exact percentage. Browser camera readiness is local to `getUserMedia()` and is
+therefore not reported by `/ready`.
 
 All application errors use a compact envelope such as:
 
@@ -76,10 +92,10 @@ The only allowed modes are `default` and `classroom_demo`.  `classroom_demo`
 uses the deployed classroom profile; it reports an unconfigured/calibration
 state until a real camera geometry config has been supplied.
 
-Poll the dashboard endpoint roughly once per second:
+For a live dashboard, connect the metadata WebSocket instead of polling REST:
 
 ```bash
-curl http://127.0.0.1:8000/api/v1/sessions/demo_abc123/stats
+ws://127.0.0.1:8000/api/v1/sessions/demo_abc123/metadata
 ```
 
 Its response is deliberately one complete snapshot:
@@ -114,7 +130,7 @@ curl -X POST http://127.0.0.1:8000/api/v1/sessions/demo_abc123/reset
 curl -X DELETE http://127.0.0.1:8000/api/v1/sessions/demo_abc123
 ```
 
-## WebRTC live camera (self-hosted ASGI)
+## WebRTC send-only camera + metadata WebSocket (self-hosted ASGI)
 
 `POST /api/v1/webrtc/offer` is the media entry point.  It accepts a complete
 **non-trickle ICE** offer and returns an SDP answer plus a newly allocated
@@ -129,11 +145,16 @@ curl -X DELETE http://127.0.0.1:8000/api/v1/sessions/demo_abc123
 }
 ```
 
-The returned annotated video track is the live preview.  The browser should
-poll `/stats` using the returned `session_id` for analytics rather than trying
-to infer telemetry from the video overlay.  The demo does not implement a
-DataChannel, candidate endpoint, TURN credentials, or multi-camera routing.
-It uses `stun:stun.l.google.com:19302` by default; set
+The offer creates an **inbound-only media path**. aiortc consumes the browser
+camera track and submits frames to the capacity-one live processor; it does
+not create an annotated output track. The browser keeps its local raw
+`<video>` smooth and connects to
+`/api/v1/sessions/{session_id}/metadata` to receive the newest compact
+analytics/overlay envelope and draw it on Canvas. REST `/stats` remains useful
+for control/debug clients, but is not the primary live data path.
+
+The demo does not implement a DataChannel, candidate endpoint, TURN
+credentials, or multi-camera routing. It uses `stun:stun.l.google.com:19302` by default; set
 `WEBRTC_STUN_SERVERS` to a comma-separated `stun:`/`stuns:` allow-list when
 self-hosting. For a simple public test, configure the browser peer with that
 same STUN service:

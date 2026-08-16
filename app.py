@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+from contextlib import suppress
 from dataclasses import dataclass
 from threading import RLock
 from time import monotonic
@@ -16,9 +17,11 @@ from src.inference.video_io import run_ffmpeg
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
-# The interactive app uses the selected FastTracker production profile unless
-# PIPELINE_CONFIG points to a calibrated deployment profile.
-CONFIG_PATH = Path(os.getenv("PIPELINE_CONFIG", PROJECT_ROOT / "configs" / "pipeline-live.yaml"))
+# The interactive app uses the classroom/room profile by default. Set
+# PIPELINE_CONFIG to a calibrated deployment profile when a different camera
+# installation should be used.
+DEFAULT_CONFIG_PATH = PROJECT_ROOT / "configs" / "pipeline-classroom-template.yaml"
+CONFIG_PATH = Path(os.getenv("PIPELINE_CONFIG", DEFAULT_CONFIG_PATH))
 DEFAULT_MODEL_PATH = (
     PROJECT_ROOT
     / "artifacts"
@@ -27,7 +30,10 @@ DEFAULT_MODEL_PATH = (
 )
 # Each live stream owns a YOLO tracker and three model objects. Keep this demo bounded so
 # reconnects or multiple browser tabs cannot retain GPU models indefinitely.
-LIVE_STREAM_EVERY_SECONDS = max(0.01, float(os.getenv("LIVE_STREAM_EVERY_SECONDS", "0.15")))
+# Send a bounded webcam cadence so mobile/tunnel uploads do not overwhelm the
+# inference worker or accumulate network latency. Override per deployment with
+# LIVE_STREAM_EVERY_SECONDS when a faster local stream is available.
+LIVE_STREAM_EVERY_SECONDS = max(0.01, float(os.getenv("LIVE_STREAM_EVERY_SECONDS", "0.25")))
 
 
 @dataclass
@@ -42,6 +48,14 @@ LIVE_PIPELINES: dict[str, LivePipelineEntry] = {}
 LIVE_PIPELINES_LOCK = RLock()
 LIVE_PIPELINE_MAX_SESSIONS = max(1, int(os.getenv("LIVE_PIPELINE_MAX_SESSIONS", "1")))
 LIVE_PIPELINE_TTL_SECONDS = max(0.0, float(os.getenv("LIVE_PIPELINE_TTL_SECONDS", "600")))
+
+# Upload analysis is also stateful and uses the same GPU as live webcam
+# inference. Keep one warm instance for repeated clips, but never let an upload
+# construct a second model set beside a live session.
+UPLOAD_PIPELINE: CrowdGenderPipeline | None = None
+UPLOAD_PIPELINE_LOCK = RLock()
+PIPELINE_OWNERSHIP_LOCK = RLock()
+UPLOAD_JOB_ACTIVE = False
 
 
 def _model_path() -> str:
@@ -64,8 +78,64 @@ def _new_pipeline() -> CrowdGenderPipeline:
     return pipeline
 
 
+def _begin_upload_job() -> None:
+    """Claim the one-GPU upload slot before loading or reusing its pipeline."""
+
+    global UPLOAD_JOB_ACTIVE
+    with PIPELINE_OWNERSHIP_LOCK:
+        with LIVE_PIPELINES_LOCK:
+            if LIVE_PIPELINES:
+                raise RuntimeError("Close the active live session before analyzing an uploaded video.")
+        if UPLOAD_JOB_ACTIVE:
+            raise RuntimeError("Another uploaded video is already being analyzed.")
+        UPLOAD_JOB_ACTIVE = True
+
+
+def _upload_pipeline_for_job() -> CrowdGenderPipeline:
+    """Return the warm upload pipeline, resetting only stream-local state."""
+
+    global UPLOAD_PIPELINE
+    with UPLOAD_PIPELINE_LOCK:
+        if UPLOAD_PIPELINE is None:
+            UPLOAD_PIPELINE = _new_pipeline()
+        else:
+            UPLOAD_PIPELINE.reset()
+        return UPLOAD_PIPELINE
+
+
+def _finish_upload_job(pipeline: CrowdGenderPipeline | None) -> None:
+    """Reset the pooled upload stream and release its ownership claim."""
+
+    global UPLOAD_JOB_ACTIVE
+    if pipeline is not None:
+        with suppress(Exception):
+            pipeline.reset()
+    with PIPELINE_OWNERSHIP_LOCK:
+        UPLOAD_JOB_ACTIVE = False
+
+
 def _run_ffmpeg(arguments: list[str]) -> None:
     run_ffmpeg(arguments[1:])
+
+
+def _open_h264_writer(
+    path: Path,
+    fps: float,
+    frame_size: tuple[int, int],
+) -> cv2.VideoWriter | None:
+    """Open a browser-compatible H.264 writer when the OpenCV backend supports it."""
+
+    width, height = frame_size
+    writer = cv2.VideoWriter(
+        str(path),
+        cv2.VideoWriter_fourcc(*"avc1"),
+        fps,
+        (width, height),
+    )
+    if writer.isOpened():
+        return writer
+    writer.release()
+    return None
 
 
 def _report(stats: dict) -> str:
@@ -162,9 +232,12 @@ def _report(stats: dict) -> str:
             f"{density_suffix}"
         )
     elif classroom_status == "geometry_required":
+        configured_seats = classroom_seats.get("enabled_seats")
+        configured_rows = classroom_layout.get("rows")
+        layout_name = classroom_layout.get("template", "layout")
         classroom_summary = (
-            f"{classroom_layout.get('template', 'layout')} is configured, but camera seat polygons are required "
-            "before occupancy is measured"
+            f"{layout_name} | {configured_rows} rows | {configured_seats} seats configured; "
+            "camera seat polygons are required before occupancy is measured"
         )
     elif classroom_status == "room_configured":
         classroom_summary = "room profile is configured; select a session layout to measure seats"
@@ -245,25 +318,48 @@ def _report(stats: dict) -> str:
 def process_video_clip(video_path: str | None, progress=gr.Progress()):
     if not video_path:
         return None, "<p>Please upload a video first.</p>"
+    pipeline: CrowdGenderPipeline | None = None
+    capture: cv2.VideoCapture | None = None
+    writer: cv2.VideoWriter | None = None
+    upload_claimed = False
     try:
-        pipeline = _new_pipeline()  # A fresh tracker/counter is required for every uploaded clip.
+        _begin_upload_job()
+        upload_claimed = True
+        pipeline = _upload_pipeline_for_job()
         job_dir = Path(tempfile.mkdtemp(prefix="crowd_gender_"))
         normalized_input = job_dir / "input.mp4"
         raw_output = job_dir / "annotated_raw.mp4"
         browser_output = job_dir / "annotated.mp4"
-        progress(0.02, desc="Normalizing video")
-        _run_ffmpeg(["ffmpeg", "-y", "-i", video_path, "-c:v", "libx264", "-pix_fmt", "yuv420p", str(normalized_input)])
-
-        capture = cv2.VideoCapture(str(normalized_input))
+        progress(0.02, desc="Opening video")
+        capture = cv2.VideoCapture(str(video_path))
         if not capture.isOpened():
-            raise RuntimeError("OpenCV could not open the normalized video.")
+            capture.release()
+            capture = None
+            progress(0.02, desc="Normalizing unsupported video")
+            _run_ffmpeg(
+                [
+                    "ffmpeg",
+                    "-y",
+                    "-i",
+                    video_path,
+                    "-c:v",
+                    "libx264",
+                    "-pix_fmt",
+                    "yuv420p",
+                    str(normalized_input),
+                ]
+            )
+            capture = cv2.VideoCapture(str(normalized_input))
+        if not capture.isOpened():
+            raise RuntimeError("OpenCV could not open the uploaded video after optional normalization.")
         total_frames = max(1, int(capture.get(cv2.CAP_PROP_FRAME_COUNT)))
         fps = capture.get(cv2.CAP_PROP_FPS) or 30.0
         width, height = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH)), int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
         if width <= 0 or height <= 0:
             raise RuntimeError("Video dimensions are invalid.")
 
-        last_stats, frame_number, writer = {}, 0, None
+        last_stats, frame_number = {}, 0
+        direct_h264 = False
         while True:
             ok, frame = capture.read()
             if not ok:
@@ -271,24 +367,52 @@ def process_video_clip(video_path: str | None, progress=gr.Progress()):
             annotated, last_stats = pipeline.process_frame(frame, timestamp_seconds=frame_number / fps)
             if writer is None:
                 output_height, output_width = annotated.shape[:2]
-                writer = cv2.VideoWriter(
-                    str(raw_output), cv2.VideoWriter_fourcc(*"mp4v"), fps, (output_width, output_height)
-                )
+                writer = _open_h264_writer(browser_output, fps, (output_width, output_height))
+                direct_h264 = writer is not None
+                if writer is None:
+                    writer = cv2.VideoWriter(
+                        str(raw_output),
+                        cv2.VideoWriter_fourcc(*"mp4v"),
+                        fps,
+                        (output_width, output_height),
+                    )
                 if not writer.isOpened():
                     raise RuntimeError("OpenCV could not create the output video.")
             writer.write(annotated)
             frame_number += 1
             progress(min(0.95, frame_number / total_frames), desc=f"Processing frame {frame_number}/{total_frames}")
-        capture.release()
         if writer is not None:
             writer.release()
+            writer = None
         if frame_number == 0:
             raise RuntimeError("No frames were decoded from the video.")
-        progress(0.97, desc="Encoding browser-compatible video")
-        _run_ffmpeg(["ffmpeg", "-y", "-i", str(raw_output), "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", str(browser_output)])
+        if not direct_h264:
+            progress(0.97, desc="Encoding browser-compatible video")
+            _run_ffmpeg(
+                [
+                    "ffmpeg",
+                    "-y",
+                    "-i",
+                    str(raw_output),
+                    "-c:v",
+                    "libx264",
+                    "-preset",
+                    "ultrafast",
+                    "-pix_fmt",
+                    "yuv420p",
+                    str(browser_output),
+                ]
+            )
         return str(browser_output), _report(last_stats)
     except Exception as error:
         return None, f"<p style='color:#d55'><b>Processing failed:</b> {error}</p>"
+    finally:
+        if capture is not None:
+            capture.release()
+        if writer is not None:
+            writer.release()
+        if upload_claimed:
+            _finish_upload_job(pipeline)
 
 
 def _session_key(request: gr.Request | None) -> str:
@@ -325,25 +449,28 @@ def _evict_inactive_live_pipelines(active_key: str) -> None:
 def _live_processor_for_session(key: str) -> LiveFrameProcessor:
     """Return the persistent per-session tracker without letting sessions share it."""
 
-    while True:
-        _evict_inactive_live_pipelines(key)
-        with LIVE_PIPELINES_LOCK:
-            entry = LIVE_PIPELINES.get(key)
-            if entry is not None:
-                entry.last_used = monotonic()
-                return entry.processor
-            if len(LIVE_PIPELINES) < LIVE_PIPELINE_MAX_SESSIONS:
-                # Keep creation serialized: model warm-up uses the same GPU as
-                # the worker and two simultaneous first callbacks must not
-                # construct two trackers for one configured session limit.
-                processor = LiveFrameProcessor(
-                    _new_pipeline(),
-                    cadence_seconds=LIVE_STREAM_EVERY_SECONDS,
-                )
-                LIVE_PIPELINES[key] = LivePipelineEntry(processor=processor, last_used=monotonic())
-                return processor
-        # Another callback filled the bounded session pool after the eviction
-        # check. Retry so it can be evicted and closed outside the dict lock.
+    with PIPELINE_OWNERSHIP_LOCK:
+        if UPLOAD_JOB_ACTIVE:
+            raise RuntimeError("An uploaded video is being analyzed; live webcam will resume when it finishes.")
+        while True:
+            _evict_inactive_live_pipelines(key)
+            with LIVE_PIPELINES_LOCK:
+                entry = LIVE_PIPELINES.get(key)
+                if entry is not None:
+                    entry.last_used = monotonic()
+                    return entry.processor
+                if len(LIVE_PIPELINES) < LIVE_PIPELINE_MAX_SESSIONS:
+                    # Keep creation serialized: model warm-up uses the same GPU as
+                    # the worker and two simultaneous first callbacks must not
+                    # construct two trackers for one configured session limit.
+                    processor = LiveFrameProcessor(
+                        _new_pipeline(),
+                        cadence_seconds=LIVE_STREAM_EVERY_SECONDS,
+                    )
+                    LIVE_PIPELINES[key] = LivePipelineEntry(processor=processor, last_used=monotonic())
+                    return processor
+            # Another callback filled the bounded session pool after the eviction
+            # check. Retry so it can be evicted and closed outside the dict lock.
 
 
 def _with_live_telemetry(stats: dict, telemetry: dict) -> dict:
@@ -354,19 +481,12 @@ def _with_live_telemetry(stats: dict, telemetry: dict) -> dict:
     return output
 
 
-def _waiting_live_report(telemetry: dict) -> str:
-    if telemetry.get("last_error"):
-        return f"<p style='color:#d55'><b>Live processing failed:</b> {telemetry['last_error']}</p>"
-    return (
-        "<p>Warming live tracker… "
-        f"newest-frame queue: {telemetry.get('pending_frames', 0)}/1 pending, "
-        f"{telemetry.get('frames_dropped_replaced', 0)} stale callback frame(s) replaced.</p>"
-    )
-
-
 def process_live_frame(frame, request: gr.Request | None = None):
     if frame is None:
-        return None, "<p>Waiting for a webcam frame…</p>"
+        # A streaming callback can briefly receive ``None`` while the browser
+        # starts/stops the camera. Keep the last rendered frame/report instead
+        # of asking Gradio to clear both outputs, which causes a visible flash.
+        return gr.skip(), gr.skip()
     try:
         key = _session_key(request)
         processor = _live_processor_for_session(key)
@@ -375,11 +495,21 @@ def process_live_frame(frame, request: gr.Request | None = None):
         result = processor.latest_result()
         telemetry = processor.telemetry()
         if result is None:
-            return None, _waiting_live_report(telemetry)
+            # Inference runs on a private worker and may not have completed by
+            # the time this ingress callback returns. Display the current raw
+            # webcam frame and leave the existing report untouched; returning
+            # ``None`` here makes Gradio clear the image and produces the
+            # recurring "waiting" flicker reported by the UI.
+            if telemetry.get("last_error"):
+                return frame, f"<p style='color:#d55'><b>Live processing failed:</b> {telemetry['last_error']}</p>"
+            return frame, gr.skip()
         stats = _with_live_telemetry(result.stats, telemetry)
         return cv2.cvtColor(result.annotated_frame, cv2.COLOR_BGR2RGB), _report(stats)
     except Exception as error:
-        return None, f"<p style='color:#d55'><b>Live processing failed:</b> {error}</p>"
+        # Keep the camera image visible while surfacing the error; clearing the
+        # image on every failed callback creates the same flash as the startup
+        # waiting path.
+        return frame, f"<p style='color:#d55'><b>Live processing failed:</b> {error}</p>"
 
 
 def reset_live(request: gr.Request | None = None):
@@ -410,7 +540,20 @@ with gr.Blocks(title="Crowd Gender Analytics") as demo:
         process_button.click(process_video_clip, inputs=video_input, outputs=[video_output, video_report])
     with gr.Tab("Live webcam"):
         with gr.Row():
-            webcam_input = gr.Image(sources=["webcam"], streaming=True, type="numpy", label="Webcam")
+            webcam_input = gr.Image(
+                sources=["webcam"],
+                streaming=True,
+                type="numpy",
+                label="Camera",
+                webcam_constraints={
+                    "video": {
+                        "width": {"ideal": 640, "max": 640},
+                        "height": {"ideal": 480, "max": 480},
+                        "facingMode": {"ideal": "environment"},
+                    },
+                    "audio": False,
+                },
+            )
             webcam_output = gr.Image(label="Annotated frame")
         live_report = gr.HTML("<p>Start the webcam to begin.</p>")
         reset_button = gr.Button("Reset live session")
@@ -434,4 +577,7 @@ with gr.Blocks(title="Crowd Gender Analytics") as demo:
 if __name__ == "__main__":
     # Upload jobs remain queued. Webcam events opt out above and use their own
     # per-session bounded latest-frame mailbox.
-    demo.queue(default_concurrency_limit=1, max_size=4).launch()
+    demo.queue(default_concurrency_limit=1, max_size=4).launch(
+        server_name="0.0.0.0",
+        server_port=7860,
+    )

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from threading import RLock
+from threading import RLock, Thread
 from time import monotonic
 from typing import Any, Callable, Protocol
 from uuid import uuid4
@@ -37,6 +37,10 @@ class UnsupportedSessionModeError(ApiSessionError):
 
 class SessionInitializationError(ApiSessionError):
     """The requested model/profile could not be prepared for a new session."""
+
+
+class SessionWarmupInProgress(ApiSessionError):
+    """A live pipeline is still being prepared in the background."""
 
 
 class SessionClosedError(ApiSessionError):
@@ -92,6 +96,25 @@ class _SessionEntry:
     last_used_monotonic: float
 
 
+@dataclass
+class _WarmupEntry:
+    mode: str
+    status: str = "idle"
+    progress: float = 0.0
+    stage: str = "idle"
+    message: str = "Model chưa được warm up."
+    error: str | None = None
+    started_at: str | None = None
+    completed_at: str | None = None
+    started_monotonic: float | None = None
+    completed_monotonic: float | None = None
+    pipeline: LivePipeline | None = None
+    thread: Thread | None = None
+    detector_ready: bool = False
+    tracker_ready: bool = False
+    attributes_ready: bool = False
+
+
 class SessionManager(Protocol):
     """Minimal manager contract shared by HTTP and WebRTC adapters."""
 
@@ -122,6 +145,10 @@ class SessionManager(Protocol):
     def readiness(self) -> dict[str, Any]: ...
 
     def close_all(self) -> None: ...
+
+    def start_warmup(self, mode: str = "default") -> dict[str, Any]: ...
+
+    def warmup_status(self, mode: str = "default") -> dict[str, Any]: ...
 
 
 class DemoSessionManager:
@@ -167,6 +194,8 @@ class DemoSessionManager:
         self._lock = RLock()
         self._entries: dict[str, _SessionEntry] = {}
         self._last_creation_error: str | None = None
+        self._warmups: dict[str, _WarmupEntry] = {}
+        self._creation_in_progress = False
 
     @property
     def allowed_modes(self) -> tuple[str, ...]:
@@ -181,18 +210,44 @@ class DemoSessionManager:
                 raise SessionCapacityError(
                     f"Live demo capacity is {self._max_sessions} session(s); close the existing session first."
                 )
+            warmup_entry = self._warmups.get(normalized_mode)
+            pipeline = None
+            if (
+                warmup_entry is not None
+                and warmup_entry.status in {"tracking_ready", "ready"}
+                and warmup_entry.pipeline is not None
+            ):
+                pipeline = warmup_entry.pipeline
+                warmup_entry.status = "in_use"
+                warmup_entry.stage = "session_starting"
+                warmup_entry.message = "Model đã sẵn sàng; đang tạo phiên live."
+            elif warmup_entry is not None and warmup_entry.status == "warming":
+                raise SessionWarmupInProgress(
+                    "Model warmup is still running. Wait for the warmup status to become ready before creating a session."
+                )
+            if pipeline is None:
+                if self._creation_in_progress:
+                    raise SessionWarmupInProgress("Another model/session initialization is already running.")
+                self._creation_in_progress = True
             try:
-                pipeline = self._pipeline_factory(normalized_mode)
+                if pipeline is None:
+                    pipeline = self._pipeline_factory(normalized_mode)
                 processor = LiveFrameProcessor(
                     pipeline,
                     cadence_seconds=self._cadence_seconds,
                     profiling_window=self._profiling_window,
                 )
             except Exception as exc:
+                if pipeline is not None and warmup_entry is not None and warmup_entry.status == "in_use":
+                    warmup_entry.pipeline = pipeline
+                    warmup_entry.status = "ready" if warmup_entry.attributes_ready else "tracking_ready"
+                    warmup_entry.stage = warmup_entry.status
                 self._last_creation_error = f"{type(exc).__name__}: {exc}"
                 raise SessionInitializationError(
                     "The selected pipeline could not be initialized. Check /api/v1/ready and server logs."
                 ) from exc
+            finally:
+                self._creation_in_progress = False
             now_monotonic = self._clock()
             now_wall = self._wall_clock()
             entry = _SessionEntry(
@@ -208,6 +263,199 @@ class DemoSessionManager:
             self._entries[entry.session_id] = entry
             self._last_creation_error = None
             return self._snapshot_locked(entry, now_monotonic)
+
+    def start_warmup(self, mode: str = "default") -> dict[str, Any]:
+        """Start an idempotent background model warmup and return its status."""
+
+        normalized_mode = self._normalize_mode(mode)
+        thread: Thread | None = None
+        with self._lock:
+            self._evict_expired_locked(self._clock())
+            entry = self._warmups.setdefault(normalized_mode, _WarmupEntry(mode=normalized_mode))
+            if self._entries:
+                if entry.status == "in_use" and entry.pipeline is not None:
+                    return self._warmup_snapshot_locked(entry)
+                entry.status = "blocked"
+                entry.progress = 100.0
+                entry.stage = "session_active"
+                entry.message = "Đang có một session live hoạt động; hãy dừng session đó trước."
+                return self._warmup_snapshot_locked(entry)
+            if entry.status in {"tracking_ready", "ready"} and entry.pipeline is not None:
+                return self._warmup_snapshot_locked(entry)
+            if entry.status == "warming":
+                return self._warmup_snapshot_locked(entry)
+            if self._creation_in_progress:
+                entry.status = "blocked"
+                entry.progress = 0.0
+                entry.stage = "session_starting"
+                entry.message = "Một phiên khác đang được khởi tạo."
+                return self._warmup_snapshot_locked(entry)
+
+            now = self._clock()
+            wall_now = self._wall_clock()
+            entry.status = "warming"
+            entry.progress = 8.0
+            entry.stage = "loading_model"
+            entry.message = "Đang tải model và khởi tạo runtime CUDA…"
+            entry.error = None
+            entry.detector_ready = False
+            entry.tracker_ready = False
+            entry.attributes_ready = False
+            entry.started_monotonic = now
+            entry.completed_monotonic = None
+            entry.started_at = wall_now.isoformat()
+            entry.completed_at = None
+            thread = Thread(
+                target=self._run_warmup,
+                args=(normalized_mode,),
+                name=f"crowd-warmup-{normalized_mode}",
+                daemon=True,
+            )
+            entry.thread = thread
+            snapshot = self._warmup_snapshot_locked(entry)
+        thread.start()
+        return snapshot
+
+    def warmup_status(self, mode: str = "default") -> dict[str, Any]:
+        """Return the current progress for one mode without starting work."""
+
+        normalized_mode = self._normalize_mode(mode)
+        with self._lock:
+            entry = self._warmups.get(normalized_mode)
+            if entry is None:
+                entry = _WarmupEntry(mode=normalized_mode)
+            return self._warmup_snapshot_locked(entry)
+
+    def _run_warmup(self, mode: str) -> None:
+        pipeline: LivePipeline | None = None
+        staged = False
+        try:
+            with self._lock:
+                entry = self._warmups[mode]
+                entry.progress = 35.0
+                entry.stage = "warming_model"
+                entry.message = "Đang warm up detector, tracker và classifier; tiến trình có thể đứng ở bước này vài giây…"
+            pipeline = self._pipeline_factory(mode)
+            tracking_warmup = getattr(pipeline, "warmup_tracking", None)
+            staged = callable(tracking_warmup)
+            if staged:
+                tracking_warmup()
+            else:
+                # Compatibility path for injected/legacy pipelines that only
+                # expose the original all-in-one warmup method.
+                pipeline.warmup()
+            with self._lock:
+                entry = self._warmups[mode]
+                entry.pipeline = pipeline
+                entry.detector_ready = bool(getattr(pipeline, "detector_ready", True))
+                entry.tracker_ready = bool(getattr(pipeline, "tracker_ready", True))
+                entry.attributes_ready = bool(getattr(pipeline, "attributes_ready", not staged))
+                entry.status = "tracking_ready" if staged and not entry.attributes_ready else "ready"
+                entry.progress = 68.0 if entry.status == "tracking_ready" else 100.0
+                entry.stage = "tracking_ready" if entry.status == "tracking_ready" else "ready"
+                entry.message = (
+                    "Detector và tracker đã sẵn sàng; attributes đang warm up nền."
+                    if entry.status == "tracking_ready"
+                    else "Model đã warm up xong và sẵn sàng cho camera."
+                )
+                entry.error = None
+                if entry.status == "ready":
+                    entry.completed_monotonic = self._clock()
+                    entry.completed_at = self._wall_clock().isoformat()
+                else:
+                    entry.completed_monotonic = None
+                    entry.completed_at = None
+            if staged and not bool(getattr(pipeline, "attributes_ready", False)):
+                with self._lock:
+                    entry = self._warmups[mode]
+                    entry.progress = 72.0
+                    entry.stage = "attributes_loading"
+                    entry.message = "Đang warm up YuNet, face classifier và body classifier ở background…"
+                attributes_warmup = getattr(pipeline, "warmup_attributes", None)
+                if callable(attributes_warmup):
+                    attributes_warmup()
+                with self._lock:
+                    entry = self._warmups[mode]
+                    entry.detector_ready = bool(getattr(pipeline, "detector_ready", entry.detector_ready))
+                    entry.tracker_ready = bool(getattr(pipeline, "tracker_ready", entry.tracker_ready))
+                    entry.attributes_ready = bool(getattr(pipeline, "attributes_ready", True))
+                    if entry.status != "in_use":
+                        entry.status = "ready"
+                    entry.progress = 100.0
+                    entry.stage = "ready" if entry.status == "ready" else "in_use"
+                    entry.message = "Attributes đã warm up xong." if entry.status == "ready" else "Live session đang sử dụng pipeline."
+                    entry.completed_monotonic = self._clock()
+                    entry.completed_at = self._wall_clock().isoformat()
+        except Exception as exc:
+            with self._lock:
+                entry = self._warmups.setdefault(mode, _WarmupEntry(mode=mode))
+                session_owns_pipeline = entry.status == "in_use" or bool(self._entries)
+                pipeline_tracker_ready = bool(getattr(pipeline, "tracker_ready", False)) if pipeline is not None else False
+            # An attribute-stage failure must not throw away a usable
+            # detector/tracker. Keep that pipeline available so the live demo
+            # can still show boxes/counts and report attributes as degraded.
+            tracking_usable = staged and pipeline_tracker_ready
+            keep_pipeline = session_owns_pipeline or tracking_usable
+            if pipeline is not None and not keep_pipeline:
+                self._close_pipeline(pipeline)
+            with self._lock:
+                entry = self._warmups.setdefault(mode, _WarmupEntry(mode=mode))
+                if not keep_pipeline and entry.pipeline is pipeline:
+                    entry.pipeline = None
+                entry.status = (
+                    "in_use"
+                    if session_owns_pipeline
+                    else "tracking_ready"
+                    if tracking_usable
+                    else "failed"
+                )
+                entry.progress = 68.0 if tracking_usable and not session_owns_pipeline else 100.0
+                entry.stage = "attributes_failed" if tracking_usable else "failed"
+                entry.message = (
+                    "Attributes warmup thất bại; tracking vẫn được giữ hoạt động."
+                    if tracking_usable
+                    else "Không thể warm up model."
+                )
+                entry.error = f"{type(exc).__name__}: {exc}"
+                entry.detector_ready = bool(getattr(pipeline, "detector_ready", entry.detector_ready)) if pipeline is not None else entry.detector_ready
+                entry.tracker_ready = bool(getattr(pipeline, "tracker_ready", entry.tracker_ready)) if pipeline is not None else entry.tracker_ready
+                if tracking_usable:
+                    entry.completed_monotonic = None
+                    entry.completed_at = None
+                else:
+                    entry.completed_monotonic = self._clock()
+                    entry.completed_at = self._wall_clock().isoformat()
+
+    def _warmup_snapshot_locked(self, entry: _WarmupEntry) -> dict[str, Any]:
+        now = self._clock()
+        elapsed = None
+        if entry.started_monotonic is not None:
+            end = entry.completed_monotonic if entry.completed_monotonic is not None else now
+            elapsed = round(max(0.0, end - entry.started_monotonic), 2)
+        return {
+            "mode": entry.mode,
+            "status": entry.status,
+            "progress": round(float(entry.progress), 1),
+            "stage": entry.stage,
+            "message": entry.message,
+            "error": entry.error,
+            "started_at": entry.started_at,
+            "completed_at": entry.completed_at,
+            "elapsed_seconds": elapsed,
+            "cached": entry.pipeline is not None,
+            "active_sessions": len(self._entries),
+            "detector_ready": entry.detector_ready,
+            "tracker_ready": entry.tracker_ready,
+            "attributes_ready": entry.attributes_ready,
+        }
+
+    @staticmethod
+    def _close_pipeline(pipeline: LivePipeline) -> None:
+        close = getattr(pipeline, "close", None)
+        if callable(close):
+            close()
+        else:
+            pipeline.reset()
 
     def get(self, session_id: str) -> SessionInfo:
         with self._lock:
@@ -261,13 +509,47 @@ class DemoSessionManager:
         if entry is None:
             raise SessionNotFoundError(f"Unknown or expired session: {session_id}")
         entry.processor.close()
+        with self._lock:
+            warmup = self._warmups.setdefault(entry.mode, _WarmupEntry(mode=entry.mode))
+            warmup.pipeline = entry.processor.pipeline
+            warmup.status = "ready" if warmup.attributes_ready else "tracking_ready"
+            warmup.progress = 100.0
+            warmup.stage = "ready" if warmup.attributes_ready else "tracking_ready"
+            warmup.message = "Model đã sẵn sàng; pipeline được giữ nóng cho lần chạy tiếp theo."
+            warmup.error = None
+            warmup.completed_monotonic = self._clock()
+            warmup.completed_at = self._wall_clock().isoformat()
 
     def close_all(self) -> None:
         with self._lock:
             entries = tuple(self._entries.values())
             self._entries.clear()
+            warmup_threads = tuple(
+                entry.thread
+                for entry in self._warmups.values()
+                if entry.thread is not None and entry.thread.is_alive()
+            )
+        # Shutdown should not tear down a CUDA module while its staged
+        # attribute warm-up is still executing.  These threads are daemonized
+        # for crash resilience, but a normal app shutdown waits for them.
+        for thread in warmup_threads:
+            thread.join()
+        # Read the cache only after the joins: a warm-up thread can publish its
+        # pipeline between the first snapshot and completion of the join.
+        with self._lock:
+            cached = tuple(
+                entry.pipeline
+                for entry in self._warmups.values()
+                if entry.pipeline is not None
+            )
+            for entry in self._warmups.values():
+                entry.pipeline = None
         for entry in entries:
             entry.processor.close()
+        active_pipeline_ids = {id(entry.processor.pipeline) for entry in entries}
+        for pipeline in cached:
+            if id(pipeline) not in active_pipeline_ids:
+                self._close_pipeline(pipeline)
 
     def health(self) -> dict[str, Any]:
         with self._lock:
@@ -311,6 +593,15 @@ class DemoSessionManager:
             # is intentionally serialized with session creation because the
             # demo has a single GPU/session capacity.
             entry.processor.close()
+            warmup = self._warmups.setdefault(entry.mode, _WarmupEntry(mode=entry.mode))
+            warmup.pipeline = entry.processor.pipeline
+            warmup.status = "ready" if warmup.attributes_ready else "tracking_ready"
+            warmup.progress = 100.0
+            warmup.stage = "ready" if warmup.attributes_ready else "tracking_ready"
+            warmup.message = "Model đã sẵn sàng; pipeline được giữ nóng cho lần chạy tiếp theo."
+            warmup.error = None
+            warmup.completed_monotonic = self._clock()
+            warmup.completed_at = self._wall_clock().isoformat()
 
     def _touch_locked(self, entry: _SessionEntry, now_monotonic: float) -> None:
         entry.last_used_monotonic = now_monotonic
@@ -352,6 +643,8 @@ def build_crowd_pipeline_factory(
     mode_configs: dict[str, str],
     *,
     gender_model_path: str | None = None,
+    warmup: bool = True,
+    defer_attribute_models: bool = False,
 ) -> PipelineFactory:
     """Create a lazy production factory without constructing a model yet."""
 
@@ -370,8 +663,10 @@ def build_crowd_pipeline_factory(
         pipeline = CrowdGenderPipeline(
             config_path=config_path,
             model_path=gender_model_path,
+            defer_attribute_models=defer_attribute_models,
         )
-        pipeline.warmup()
+        if warmup:
+            pipeline.warmup()
         return pipeline
 
     return factory
