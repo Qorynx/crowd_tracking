@@ -19,6 +19,7 @@ FastAPI :8000 (API only)
         │   ├── /layout
         │   └── /calibration
         ├── /api/v1/webrtc/offer
+        ├── /api/v1/sessions/{id}/metadata (WebSocket)
         └── /api/v1/video/analyze
 ```
 
@@ -52,8 +53,9 @@ stop the loop. The dashboard also maps backend live-stream telemetry and
 analytics into view models without demo fallbacks.
 
 Stage 3 adds a metadata canvas overlay for tracks, motion, zones, and seats;
-uses `after_sequence` plus backend cadence to avoid painting stale results;
-and exposes WebRTC as an optional transport with HTTP-frame fallback.
+uses WebRTC as a send-only camera ingest path, pushes result envelopes over a
+session WebSocket, and keeps the raw camera local. The older HTTP-frame path is
+retained only as a bounded fallback when WebRTC negotiation/runtime is unavailable.
 
 Stage 4 removes dashboard-only demo values. Analytics now renders the
 backend's dynamic zone list and bounded heatmap grid, preserves explicit

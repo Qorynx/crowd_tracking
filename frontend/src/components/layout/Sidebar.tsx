@@ -4,6 +4,7 @@ import {
   Radio,
   Activity,
   Cpu,
+  Armchair,
   FileVideo,
 } from 'lucide-react';
 import type { PageType } from '../../types/analytics';
@@ -19,6 +20,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ activePage, onPageChange, t })
     { id: 'overview', label: t.overview, icon: LayoutDashboard },
     { id: 'live', label: t.live, icon: Radio },
     { id: 'analytics', label: t.analytics, icon: Activity },
+    { id: 'room', label: t.room, icon: Armchair },
     { id: 'system', label: t.system, icon: Cpu },
     { id: 'video', label: t.video, icon: FileVideo },
   ];
@@ -46,9 +48,6 @@ export const Sidebar: React.FC<SidebarProps> = ({ activePage, onPageChange, t })
             >
               <Icon className={`w-4 h-4 ${isActive ? 'text-cyan-400' : 'text-slate-400'}`} />
               <span>{item.label}</span>
-              {item.id === 'live' && (
-                <span className="ml-auto w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-              )}
             </button>
           );
         })}
@@ -63,10 +62,6 @@ export const Sidebar: React.FC<SidebarProps> = ({ activePage, onPageChange, t })
         <div className="flex justify-between items-center text-slate-400">
           <span>TRACKER</span>
           <span className="text-slate-200">FastTracker</span>
-        </div>
-        <div className="flex justify-between items-center text-slate-400">
-          <span>TARGET AREA</span>
-          <span className="text-slate-200">64 m²</span>
         </div>
       </div>
     </aside>

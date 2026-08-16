@@ -1,14 +1,13 @@
 import React from 'react';
-import { Camera, Zap, Cpu, Clock, CheckCircle2 } from 'lucide-react';
+import { Camera, Zap, Cpu, Clock } from 'lucide-react';
 import type { LiveStreamTelemetry } from '../../types/analytics';
 
 interface FooterProps {
   telemetry: LiveStreamTelemetry;
-  t: any;
   isLive?: boolean;
 }
 
-export const Footer: React.FC<FooterProps> = ({ telemetry, t, isLive = false }) => {
+export const Footer: React.FC<FooterProps> = ({ telemetry, isLive = false }) => {
   return (
     <footer className="hidden md:flex h-10 bg-[#0b172a]/95 backdrop-blur-md border-t border-sky-500/40 px-4 items-center justify-between text-xs text-slate-300 font-mono sticky bottom-0 z-40 shadow-lg">
       <div className="flex items-center space-x-6">
@@ -31,11 +30,6 @@ export const Footer: React.FC<FooterProps> = ({ telemetry, t, isLive = false }) 
           <Clock className="w-3.5 h-3.5 text-slate-400" />
           <span>LATENCY P95: <strong className="text-slate-100">{isLive && telemetry.latency_p95_ms != null ? `${telemetry.latency_p95_ms.toFixed(1)} ms` : '--'}</strong></span>
         </div>
-      </div>
-
-      <div className="flex items-center space-x-2">
-        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-        <span className="text-emerald-400 font-bold">{t.systemOnline}</span>
       </div>
     </footer>
   );

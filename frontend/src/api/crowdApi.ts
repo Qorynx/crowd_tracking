@@ -210,6 +210,20 @@ export function createWebRTCOffer(
   });
 }
 
+/** Open the metadata-only side channel paired with one WebRTC live session. */
+export function createSessionMetadataSocket(sessionId: string): WebSocket {
+  if (typeof window === 'undefined' || typeof WebSocket === 'undefined') {
+    throw new Error('WebSocket metadata transport is unavailable in this browser.');
+  }
+  const base = (getBaseUrl() || window.location.origin).replace(/\/api\/v1\/?$/, '');
+  const url = new URL(
+    `${base}/api/v1/sessions/${encodeURIComponent(sessionId)}/metadata`,
+    window.location.href,
+  );
+  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+  return new WebSocket(url.toString());
+}
+
 export function analyzeVideo(file: File, mode = 'default', signal?: AbortSignal): Promise<VideoAnalysisResponse> {
   const formData = new FormData();
   formData.append('file', file);

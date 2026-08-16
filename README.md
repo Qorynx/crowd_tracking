@@ -14,7 +14,8 @@ is cleared when a session resets or expires.
 ## Included in this repository
 
 - Local Gradio application (`app.py`)
-- FastAPI demo API, including short-video analysis and WebRTC offer signaling
+- FastAPI demo API, including short-video analysis, WebRTC camera ingest, and
+  a metadata WebSocket for the live overlay
 - FastTracker, persistent session person IDs, detector recovery, crowd
   statistics, heatmap, zones, and classroom-layout support
 - Modal API deployment definition
@@ -73,10 +74,14 @@ Open `http://127.0.0.1:8000/docs` for the interactive API. The compact API
 guide, request examples, and response metrics are in
 [docs/fastapi-demo.md](docs/fastapi-demo.md).
 
-The WebRTC offer endpoint is optional. For a self-hosted WebRTC demo, install
-`deploy/requirements-webrtc.txt`. Public Modal WebRTC needs a dedicated
-signaling/peer/TURN adapter and is not represented as a production promise by
-this MVP.
+The live camera transport is optional. For a self-hosted demo, install
+`deploy/requirements-webrtc.txt`; the browser sends camera media to aiortc and
+keeps its raw `<video>` local while receiving bbox/analytics metadata over
+WebSocket. The old server-rendered annotated video round-trip is not used.
+FastRTC is intentionally not added here: the current aiortc adapter already
+provides the required send-only media path, so a wrapper migration would not
+by itself improve inference latency. Public Modal WebRTC still needs a
+dedicated signaling/peer/TURN adapter.
 
 To build the API as an independent container, provision the model assets first
 and build from the repository root. The image exposes port 8000 and does not

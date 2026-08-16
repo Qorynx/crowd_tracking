@@ -4,6 +4,8 @@ import {
   Radio,
   Activity,
   Cpu,
+  Armchair,
+  FileVideo,
 } from 'lucide-react';
 import type { PageType } from '../../types/analytics';
 
@@ -18,11 +20,13 @@ export const MobileNav: React.FC<MobileNavProps> = ({ activePage, onPageChange, 
     { id: 'overview', label: t.overview, icon: LayoutDashboard },
     { id: 'live', label: t.live, icon: Radio },
     { id: 'analytics', label: t.analytics, icon: Activity },
+    { id: 'room', label: t.room, icon: Armchair },
     { id: 'system', label: t.system, icon: Cpu },
+    { id: 'video', label: t.video, icon: FileVideo },
   ];
 
   return (
-    <div className="md:hidden fixed bottom-0 left-0 right-0 h-14 bg-[#0b172a]/95 backdrop-blur-md border-t border-sky-500/40 px-2 flex items-center justify-around z-50 shadow-2xl">
+    <div className="md:hidden fixed bottom-0 left-0 right-0 h-14 bg-[#0b172a]/95 backdrop-blur-md border-t border-sky-500/40 px-1 flex items-center justify-start overflow-x-auto z-50 shadow-2xl">
       {navItems.map((item) => {
         const Icon = item.icon;
         const isActive = activePage === item.id;
@@ -30,7 +34,7 @@ export const MobileNav: React.FC<MobileNavProps> = ({ activePage, onPageChange, 
           <button
             key={item.id}
             onClick={() => onPageChange(item.id)}
-            className={`flex flex-col items-center justify-center space-y-0.5 py-1 px-3 rounded-lg text-[10px] font-mono font-medium transition-all ${
+            className={`flex min-w-[16.666%] shrink-0 flex-col items-center justify-center space-y-0.5 py-1 px-1 rounded-lg text-[10px] font-mono font-medium transition-all ${
               isActive ? 'text-cyan-400 font-bold' : 'text-slate-400 hover:text-cyan-300'
             }`}
           >

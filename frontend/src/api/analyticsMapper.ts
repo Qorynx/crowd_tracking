@@ -32,6 +32,12 @@ function zoneNameMatches(name: string, target: string): boolean {
 export function mapAnalyticsPayload(rawStats: UnknownRecord, previous: AnalyticsData): AnalyticsData {
   const crowd = asRecord(rawStats.crowd);
   const crossing = asRecord(rawStats.crossing);
+  const history = asRecord(rawStats.history);
+  const historyFlow = asRecord(history.flow);
+  const flowWindows = Array.isArray(historyFlow.windows) ? historyFlow.windows.map(asRecord) : [];
+  const preferredFlowWindow = flowWindows.find((window) => Number(window.window_seconds) === 60)
+    ?? flowWindows[0]
+    ?? {};
   const trajectory = asRecord(rawStats.trajectory);
   const attributes = asRecord(rawStats.attributes);
   const visual = asRecord(attributes.visual_presentation);
@@ -62,6 +68,9 @@ export function mapAnalyticsPayload(rawStats: UnknownRecord, previous: Analytics
   const hasSpatialSnapshot = Object.keys(spatial).length > 0;
   const flowIn = firstFinite(crossing.in) ?? previous.flow_in;
   const flowOut = firstFinite(crossing.out) ?? previous.flow_out;
+  const flowInPerMinute = firstFinite(preferredFlowWindow.in_per_minute) ?? previous.flow_in_per_minute;
+  const flowOutPerMinute = firstFinite(preferredFlowWindow.out_per_minute) ?? previous.flow_out_per_minute;
+  const netFlowPerMinute = firstFinite(preferredFlowWindow.net_per_minute) ?? (flowInPerMinute - flowOutPerMinute);
   const visualLabels = {
     female: firstFinite(labels.female),
     male: firstFinite(labels.male),
@@ -105,6 +114,9 @@ export function mapAnalyticsPayload(rawStats: UnknownRecord, previous: Analytics
     flow_in: flowIn,
     flow_out: flowOut,
     net_flow: flowIn - flowOut,
+    flow_in_per_minute: flowInPerMinute,
+    flow_out_per_minute: flowOutPerMinute,
+    net_flow_per_minute: netFlowPerMinute,
     visual_presentation: hasVisualLabels
       ? {
           female_presenting: visualLabels.female ?? 0,
@@ -124,6 +136,7 @@ export function mapAnalyticsPayload(rawStats: UnknownRecord, previous: Analytics
     crowd: Object.keys(crowd).length > 0 ? crowd : previous.crowd,
     trajectory: Object.keys(trajectory).length > 0 ? trajectory : previous.trajectory,
     crossing: Object.keys(crossing).length > 0 ? crossing : previous.crossing,
+    history: Object.keys(history).length > 0 ? history : previous.history,
     room_area_m2: firstFinite(room.visible_floor_area_m2) ?? previous.room_area_m2 ?? null,
     room_capacity: maximumCapacity ?? previous.room_capacity ?? null,
     occupancy_calibrated: maximumCapacity !== undefined && maximumCapacity > 0,

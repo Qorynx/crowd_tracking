@@ -4,7 +4,7 @@ import { Sidebar } from './components/layout/Sidebar';
 import { MobileNav } from './components/layout/MobileNav';
 import { Footer } from './components/layout/Footer';
 import type { PageType, AnalyticsData, LiveStreamTelemetry } from './types/analytics';
-import { CrowdApiError, getApiErrorMessage, getHealth, getReadiness } from './api/crowdApi';
+import { CrowdApiError, getHealth, getReadiness } from './api/crowdApi';
 import { mapLiveStreamTelemetry } from './api/telemetryMapper';
 import { mapAnalyticsPayload } from './api/analyticsMapper';
 import type { ApiAvailability } from './api/contracts';
@@ -32,6 +32,9 @@ function createEmptyAnalytics(): AnalyticsData {
     flow_in: 0,
     flow_out: 0,
     net_flow: 0,
+    flow_in_per_minute: 0,
+    flow_out_per_minute: 0,
+    net_flow_per_minute: 0,
     visual_presentation: { female_presenting: 0, male_presenting: 0, unknown: 0, coverage_pct: 0 },
     space_distribution: { front_pct: 0, middle_pct: 0, back_pct: 0 },
     zones: [],
@@ -48,7 +51,6 @@ function PageLoading() {
 
 export function App() {
   const [activePage, setActivePage] = useState<PageType>('overview');
-  const [currentRoom, setCurrentRoom] = useState('Classroom A');
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [apiStatus, setApiStatus] = useState<ApiAvailability>('checking');
   const [livePageMounted, setLivePageMounted] = useState(false);
@@ -96,17 +98,6 @@ export function App() {
   const [vietnamTime, setVietnamTime] = useState('');
   const [isLiveStreamActive, setIsLiveStreamActive] = useState(false);
 
-  // Live System Event Logs
-  const [systemLogs, setSystemLogs] = useState<string[]>(() => [
-    `[${new Date().toLocaleTimeString('vi-VN')}] [SYSTEM] Crowd Analytics Telemetry Engine online.`,
-    `[${new Date().toLocaleTimeString('vi-VN')}] [INFO] YOLO11n + FastTracker backend pipeline initialized.`,
-  ]);
-
-  const addSystemLog = (msg: string) => {
-    const timeStr = new Date().toLocaleTimeString('vi-VN');
-    setSystemLogs((prev) => [...prev.slice(-99), `[${timeStr}] ${msg}`]);
-  };
-
   // Service health/readiness is independent from live session ownership.
   useEffect(() => {
     const controller = new AbortController();
@@ -121,7 +112,6 @@ export function App() {
       } catch (error) {
         if (controller.signal.aborted) return;
         setApiStatus(error instanceof CrowdApiError && error.status === 503 ? 'not_ready' : 'offline');
-        addSystemLog(`[WARN] API readiness check failed: ${getApiErrorMessage(error, 'Unknown API error')}`);
       }
     }
 
@@ -150,8 +140,6 @@ export function App() {
   return (
     <div className="min-h-screen flex flex-col font-sans transition-colors duration-300">
       <Header
-        currentRoom={currentRoom}
-        onRoomChange={setCurrentRoom}
         sessionDuration={vietnamTime}
         lang={lang}
         onToggleLanguage={toggleLanguage}
@@ -169,7 +157,7 @@ export function App() {
               <OverviewPage
                 analytics={analytics}
                 roomCalibrated={analytics.density_per_m2 !== null}
-                roomName={currentRoom}
+                roomName="Classroom A"
                 t={t}
               />
             )}
@@ -183,7 +171,6 @@ export function App() {
                   t={t}
                   onStreamingChange={setIsLiveStreamActive}
                   onSessionChange={handleSessionChange}
-                  addSystemLog={addSystemLog}
                 />
               </div>
             )}
@@ -193,7 +180,7 @@ export function App() {
             {activePage === 'room' && <RoomSetupPage t={t} sessionId={activeSessionId} />}
 
             {activePage === 'system' && (
-              <SystemPage telemetry={telemetry} t={t} logs={systemLogs} isLive={isLiveStreamActive} />
+              <SystemPage telemetry={telemetry} t={t} isLive={isLiveStreamActive} />
             )}
 
             {activePage === 'video' && <VideoPage />}
@@ -201,7 +188,7 @@ export function App() {
         </main>
       </div>
 
-      <Footer telemetry={telemetry} t={t} isLive={isLiveStreamActive} />
+      <Footer telemetry={telemetry} isLive={isLiveStreamActive} />
       <MobileNav activePage={activePage} onPageChange={setActivePage} t={t} />
     </div>
   );

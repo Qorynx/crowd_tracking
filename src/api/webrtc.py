@@ -6,13 +6,19 @@ the lightweight HTTP API must still boot in environments that only need the
 upload/frame-demo path.  In such an environment the offer endpoint returns a
 clear 503 rather than pretending that a peer connection was established.
 
-The browser must use *non-trickle ICE* for this small demo: it waits until its
+The browser uses *non-trickle ICE* for this small demo: it waits until its
 offer has finished ICE gathering, then posts the complete offer here.  This
-keeps the public API to one signalling endpoint.  aiortc peers use a default
-public STUN server (overridable with ``WEBRTC_STUN_SERVERS``) for candidate
-discovery.  TURN and a Modal-specific peer/TURN adapter remain intentionally
-out of scope for this one-camera demo; restrictive NATs may therefore still
-need a later production transport layer.
+keeps the public API to one signalling endpoint.  The media direction is
+deliberately **send-only**: aiortc consumes the browser camera track and feeds
+the latest frame into ``LiveFrameProcessor``.  It does not render or send an
+annotated video track back to the browser.  The frontend keeps the camera's
+local ``<video>`` smooth and receives compact analytics/overlay metadata over
+the companion WebSocket endpoint.
+
+aiortc peers use a default public STUN server (overridable with
+``WEBRTC_STUN_SERVERS``) for candidate discovery.  TURN and a Modal-specific
+peer/TURN adapter remain intentionally out of scope for this one-camera demo;
+restrictive NATs may therefore still need a later production transport layer.
 """
 
 from __future__ import annotations
@@ -250,6 +256,12 @@ class WebRTCPeerRegistry:
             return self._records.pop(session_id)
 
     async def _close_peer_connection(self, peer_connection: Any) -> None:
+        ingest_tasks = list(getattr(peer_connection, "_crowd_ingest_tasks", ()))
+        for task in ingest_tasks:
+            if not task.done():
+                task.cancel()
+        if ingest_tasks:
+            await asyncio.gather(*ingest_tasks, return_exceptions=True)
         try:
             result = peer_connection.close()
             if inspect.isawaitable(result):
@@ -279,68 +291,40 @@ def _session_id_from(entry: Any) -> str:
     return session_id
 
 
-def _latest_annotated_frame(result: Any) -> np.ndarray | None:
-    """Extract a completed ``LiveFrameResult`` without coupling to its class."""
-
-    frame = getattr(result, "annotated_frame", None)
-    if isinstance(frame, np.ndarray) and frame.ndim == 3:
-        return frame
-    return None
-
-
-def _make_annotated_video_track(
-    backend: AiortcBackend,
+async def _consume_video_track(
     session_manager: WebRTCSessionManager,
     session_id: str,
-) -> type[Any]:
-    """Build a transform track only after aiortc is available.
+    source_track: Any,
+) -> None:
+    """Consume an inbound camera track without creating a return media track.
 
-    The source frame is offered to ``LiveFrameProcessor`` and the most recent
-    completed annotation is returned.  This deliberately does not await model
-    inference in ``recv``: the processor's capacity-one mailbox retains only
-    the newest input frame, so a slow detector cannot create a growing media
-    backlog or mutate one FastTracker concurrently.
+    ``LiveFrameProcessor.submit_frame`` is intentionally non-blocking and
+    capacity-one.  The consumer therefore keeps the WebRTC receive loop
+    flowing while the model worker processes only the newest frame.  Results
+    are delivered separately by the metadata WebSocket.
     """
 
-    class AnnotatedVideoTrack(backend.video_stream_track_type):
-        kind = "video"
-
-        def __init__(self, source_track: Any) -> None:
-            super().__init__()
-            self._source_track = source_track
-
-        async def recv(self) -> Any:
-            source_frame = await self._source_track.recv()
-            try:
-                source_bgr = source_frame.to_ndarray(format="bgr24")
-                session_manager.submit_frame(
-                    session_id,
-                    source_bgr,
-                    submitted_at=monotonic(),
-                )
-                completed = session_manager.latest_result(session_id)
-                annotated_bgr = _latest_annotated_frame(completed)
-                # Keep a valid live image flowing until the first asynchronous
-                # inference result is ready, and guard against a mismatched
-                # result after a caller changes source resolution.
-                if annotated_bgr is None or annotated_bgr.shape[:2] != source_bgr.shape[:2]:
-                    annotated_bgr = source_bgr
-            except Exception:
-                # A bad media frame must not permanently terminate the browser
-                # preview. Pipeline errors are separately recorded by the live
-                # processor telemetry exposed via /stats.
-                LOGGER.debug("WebRTC video frame could not be submitted.", exc_info=True)
-                return source_frame
-
-            output_frame = backend.video_frame_type.from_ndarray(
-                np.ascontiguousarray(annotated_bgr),
-                format="bgr24",
+    try:
+        while True:
+            source_frame = await source_track.recv()
+            source_bgr = source_frame.to_ndarray(format="bgr24")
+            if not isinstance(source_bgr, np.ndarray) or source_bgr.ndim != 3:
+                continue
+            session_manager.submit_frame(
+                session_id,
+                source_bgr,
+                submitted_at=monotonic(),
             )
-            output_frame.pts = source_frame.pts
-            output_frame.time_base = source_frame.time_base
-            return output_frame
-
-    return AnnotatedVideoTrack
+            # Real aiortc ``recv`` awaits the next RTP frame.  Yield once as
+            # well so deterministic test tracks and alternate adapters that
+            # return an already-ready frame cannot monopolize the event loop.
+            await asyncio.sleep(0)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        # A browser track ending or a malformed media frame must not crash the
+        # ASGI worker.  Connection-state cleanup owns the session lifecycle.
+        LOGGER.debug("WebRTC inbound video track ended.", exc_info=True)
 
 
 def _unavailable_detail(exc: WebRTCDependencyUnavailable) -> dict[str, str]:
@@ -440,12 +424,17 @@ def create_webrtc_router(
             if getattr(track, "kind", None) != "video" or video_attached:
                 return
             video_attached = True
-            annotated_track = _make_annotated_video_track(
-                backend,
-                session_manager,
-                session_id,
-            )(track)
-            peer_connection.addTrack(annotated_track)
+            # The browser is the only video sender.  Keep this task attached
+            # to the peer so registry teardown can cancel it before closing
+            # the aiortc connection.
+            ingest_task = asyncio.create_task(
+                _consume_video_track(session_manager, session_id, track)
+            )
+            tasks = getattr(peer_connection, "_crowd_ingest_tasks", None)
+            if tasks is None:
+                tasks = []
+                setattr(peer_connection, "_crowd_ingest_tasks", tasks)
+            tasks.append(ingest_task)
 
         try:
             await peer_connection.setRemoteDescription(

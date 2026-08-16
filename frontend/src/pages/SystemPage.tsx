@@ -1,24 +1,14 @@
-import React, { useEffect, useRef } from 'react';
-import { Cpu, Server, Zap, HardDrive, Clock, CheckCircle } from 'lucide-react';
+import React from 'react';
+import { Cpu, Zap, HardDrive, Clock } from 'lucide-react';
 import type { LiveStreamTelemetry } from '../types/analytics';
 
 interface SystemPageProps {
   telemetry: LiveStreamTelemetry;
   t: any;
-  logs?: string[];
   isLive?: boolean;
 }
 
-export const SystemPage: React.FC<SystemPageProps> = ({ telemetry, t, logs = [], isLive = false }) => {
-  const logContainerRef = useRef<HTMLDivElement>(null);
-
-  // Auto-scroll log terminal to bottom when new logs arrive
-  useEffect(() => {
-    if (logContainerRef.current) {
-      logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
-    }
-  }, [logs]);
-
+export const SystemPage: React.FC<SystemPageProps> = ({ telemetry, t, isLive = false }) => {
   return (
     <div className="p-6 space-y-6 max-w-7xl mx-auto">
       {/* Header */}
@@ -28,10 +18,6 @@ export const SystemPage: React.FC<SystemPageProps> = ({ telemetry, t, logs = [],
             {t.systemTitle}
           </h2>
           <p className="text-xs text-sky-300/80 font-mono">{t.systemSub}</p>
-        </div>
-        <div className="flex items-center space-x-2 text-xs font-mono text-emerald-400 bg-emerald-500/15 border border-emerald-400/40 px-3 py-1.5 rounded-lg font-bold">
-          <CheckCircle className="w-4 h-4" />
-          <span>{isLive ? 'AI ENGINE STREAMING' : t.engineOnline}</span>
         </div>
       </div>
 
@@ -47,15 +33,11 @@ export const SystemPage: React.FC<SystemPageProps> = ({ telemetry, t, logs = [],
           <div className="space-y-2 text-xs">
             <div className="flex justify-between border-b border-sky-500/30 pb-1.5">
               <span className="text-sky-300">{t.detectorLabel}</span>
-              <span className="text-cyan-400 font-bold">YOLO11n</span>
+              <span className="text-cyan-400 font-bold">{isLive ? telemetry.detector_model || '--' : '--'}</span>
             </div>
             <div className="flex justify-between border-b border-sky-500/30 pb-1.5">
               <span className="text-sky-300">{t.trackerLabel}</span>
-              <span className="text-slate-100 font-bold">FastTracker</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-sky-300">{t.deviceLabel}</span>
-              <span className="text-emerald-400 font-bold">CUDA / GPU</span>
+              <span className="text-slate-100 font-bold">{isLive ? telemetry.tracker_type || '--' : '--'}</span>
             </div>
           </div>
         </div>
@@ -131,55 +113,6 @@ export const SystemPage: React.FC<SystemPageProps> = ({ telemetry, t, logs = [],
               <span className="text-emerald-400 font-bold">{telemetry.pending_frames ?? '--'}</span>
             </div>
           </div>
-        </div>
-      </div>
-
-      {/* Raw Diagnostic Log Terminal */}
-      <div className="cyber-card p-5 space-y-3 font-mono">
-        <h3 className="text-sm font-bold text-slate-100 flex items-center justify-between">
-          <span className="flex items-center gap-2">
-            <Server className="w-4 h-4 text-cyan-400" />
-            {t.logTitle}
-          </span>
-          <span className="text-xs text-sky-400 font-normal">
-            Total entries: {logs.length}
-          </span>
-        </h3>
-        <div
-          ref={logContainerRef}
-          className="bg-[#071120] border border-sky-500/30 p-4 rounded-lg text-xs text-sky-300 space-y-1.5 h-56 overflow-y-auto"
-        >
-          {logs.length > 0 ? (
-            logs.map((logLine, idx) => {
-              const isInfo = logLine.includes('[INFO]') || logLine.includes('[SYSTEM]');
-              const isAi = logLine.includes('[AI]') || logLine.includes('[STATS]');
-              const isWebcam = logLine.includes('[WEBCAM]');
-              const isWarn = logLine.includes('[WARN]') || logLine.includes('[ERROR]');
-
-              return (
-                <div
-                  key={idx}
-                  className={
-                    isInfo
-                      ? 'text-emerald-400 font-semibold'
-                      : isAi
-                      ? 'text-cyan-300'
-                      : isWebcam
-                      ? 'text-sky-300'
-                      : isWarn
-                      ? 'text-rose-400 font-bold'
-                      : 'text-slate-300'
-                  }
-                >
-                  {logLine}
-                </div>
-              );
-            })
-          ) : (
-            <div className="text-slate-500 italic">
-              [STANDBY] Engine ready. Click "Start AI Camera Stream" on Live Monitor to launch inference log stream...
-            </div>
-          )}
         </div>
       </div>
     </div>

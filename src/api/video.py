@@ -170,7 +170,7 @@ class ShortVideoAnalyzer:
                 "analytics": last_stats,
                 "artifacts": {
                     "annotated_video_url": None,
-                    "note": "The bounded demo endpoint returns analytics only; WebRTC renders live annotated video.",
+                    "note": "The bounded demo endpoint returns analytics only; live WebRTC is send-only and the browser renders metadata overlays locally.",
                 },
             }
         finally:

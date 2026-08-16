@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Camera, Layers, Play, Pause, Settings, RefreshCw, CheckSquare, Square, AlertCircle, UserCheck, Crosshair } from 'lucide-react';
 import type { LabelMode, OverlayOptions, AnalyticsData } from '../types/analytics';
 import type { FrameOverlay, OverlaySeat, OverlayTrack, OverlayZone, SessionStatsResponse } from '../api/contracts';
-import { CrowdApiError, createSession, createWebRTCOffer, deleteSession, getApiErrorMessage, getSessionStats, getWarmupStatus, resetSession, startWarmup, submitFrame } from '../api/crowdApi';
+import { CrowdApiError, createSessionMetadataSocket, createSession, createWebRTCOffer, deleteSession, getApiErrorMessage, getWarmupStatus, resetSession, startWarmup, submitFrame } from '../api/crowdApi';
 
 interface LivePageProps {
   analytics: AnalyticsData;
@@ -11,7 +11,6 @@ interface LivePageProps {
   t: any;
   onStreamingChange?: (active: boolean) => void;
   onSessionChange?: (sessionId: string | null) => void;
-  addSystemLog?: (msg: string) => void;
 }
 
 interface FocusedBox {
@@ -92,11 +91,10 @@ async function requestCameraWithTimeout(constraints: MediaStreamConstraints): Pr
   }
 }
 
-export const LivePage: React.FC<LivePageProps> = ({ analytics, onAnalyticsUpdate, onTelemetryUpdate, t, onStreamingChange, onSessionChange, addSystemLog }) => {
+export const LivePage: React.FC<LivePageProps> = ({ analytics, onAnalyticsUpdate, onTelemetryUpdate, t, onStreamingChange, onSessionChange }) => {
   const [labelMode, setLabelMode] = useState<LabelMode>('minimal');
   const [isStreaming, setIsStreaming] = useState(false);
   const [isCameraLive, setIsCameraLive] = useState(false);
-  const [transport, setTransport] = useState<TransportMode>('http');
   const [activeTransport, setActiveTransport] = useState<TransportMode | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [facingMode, setFacingMode] = useState<'user' | 'environment'>('user');
@@ -117,7 +115,6 @@ export const LivePage: React.FC<LivePageProps> = ({ analytics, onAnalyticsUpdate
     zones: true,
     seats: true,
     trajectory: false,
-    heatmap: false,
   });
 
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -125,8 +122,8 @@ export const LivePage: React.FC<LivePageProps> = ({ analytics, onAnalyticsUpdate
   const captureCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const intervalRef = useRef<any>(null);
-  const statsIntervalRef = useRef<number | null>(null);
   const webRtcPeerRef = useRef<RTCPeerConnection | null>(null);
+  const metadataSocketRef = useRef<WebSocket | null>(null);
   const frameAbortControllerRef = useRef<AbortController | null>(null);
   const warmupAbortControllerRef = useRef<AbortController | null>(null);
   const isStartingRef = useRef(false);
@@ -138,11 +135,9 @@ export const LivePage: React.FC<LivePageProps> = ({ analytics, onAnalyticsUpdate
   const isSendingRef = useRef<boolean>(false);
   const onStreamingChangeRef = useRef(onStreamingChange);
   const onSessionChangeRef = useRef(onSessionChange);
-  const addSystemLogRef = useRef(addSystemLog);
 
   onStreamingChangeRef.current = onStreamingChange;
   onSessionChangeRef.current = onSessionChange;
-  addSystemLogRef.current = addSystemLog;
 
   useEffect(() => {
     if (!captureCanvasRef.current) {
@@ -158,7 +153,7 @@ export const LivePage: React.FC<LivePageProps> = ({ analytics, onAnalyticsUpdate
     }
   };
 
-  const applyWebRTCStats = (response: SessionStatsResponse) => {
+  const applyMetadataStats = (response: SessionStatsResponse) => {
     const resultSequence = response.frame?.sequence;
     if (resultSequence == null || (lastResultSequenceRef.current != null && resultSequence <= lastResultSequenceRef.current)) {
       return;
@@ -176,6 +171,10 @@ export const LivePage: React.FC<LivePageProps> = ({ analytics, onAnalyticsUpdate
     });
     const liveStreamTelemetry = response.live_stream;
     if (liveStreamTelemetry) {
+      const endToEnd = liveStreamTelemetry.end_to_end_ms;
+      if (endToEnd && typeof endToEnd.last === 'number') {
+        setLatencyMs(Math.round(endToEnd.last));
+      }
       onTelemetryUpdate?.({
         live_stream: liveStreamTelemetry,
         runtime: analytics?.runtime,
@@ -185,27 +184,50 @@ export const LivePage: React.FC<LivePageProps> = ({ analytics, onAnalyticsUpdate
     if (analytics) onAnalyticsUpdate(analytics);
   };
 
-  const startWebRTCStatsPolling = (session: string) => {
-    if (statsIntervalRef.current != null) window.clearInterval(statsIntervalRef.current);
-    const poll = async () => {
-      if (activeSessionIdRef.current !== session) return;
-      const startedAt = performance.now();
-      try {
-        const response = await getSessionStats(session);
-        if (activeSessionIdRef.current !== session) return;
-        setLatencyMs(Math.round(performance.now() - startedAt));
-        applyWebRTCStats(response);
-      } catch (error) {
-        if (error instanceof CrowdApiError && error.status === 404) {
-          stopStream();
-          return;
-        }
-        addSystemLog?.(`[WARN] WebRTC stats polling failed: ${getApiErrorMessage(error, 'Unknown API error')}`);
+  const startMetadataSocket = (session: string): Promise<void> => new Promise((resolve, reject) => {
+    const socket = createSessionMetadataSocket(session);
+    metadataSocketRef.current = socket;
+    let settled = false;
+    const timeoutId = window.setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      socket.close();
+      reject(new Error('Metadata WebSocket did not connect in time.'));
+    }, 5_000);
+
+    socket.onopen = () => {
+      if (!settled) {
+        settled = true;
+        window.clearTimeout(timeoutId);
+        resolve();
       }
     };
-    void poll();
-    statsIntervalRef.current = window.setInterval(() => void poll(), 350);
-  };
+    socket.onmessage = (event) => {
+      if (activeSessionIdRef.current !== session) return;
+      try {
+        const response = JSON.parse(String(event.data)) as SessionStatsResponse;
+        applyMetadataStats(response);
+      } catch {
+      }
+    };
+    socket.onerror = () => {
+      if (!settled) {
+        settled = true;
+        window.clearTimeout(timeoutId);
+        reject(new Error('Metadata WebSocket connection failed.'));
+        return;
+      }
+    };
+    socket.onclose = () => {
+      if (!settled) {
+        settled = true;
+        window.clearTimeout(timeoutId);
+        reject(new Error('Metadata WebSocket closed before connecting.'));
+      } else if (activeSessionIdRef.current === session && !isStartingRef.current) {
+        stopStream();
+      }
+    };
+  });
 
   const waitForIceGathering = async (peer: RTCPeerConnection): Promise<void> => {
     if (peer.iceGatheringState === 'complete') return;
@@ -229,10 +251,8 @@ export const LivePage: React.FC<LivePageProps> = ({ analytics, onAnalyticsUpdate
   const cleanupWebRTCSession = async () => {
     const sessionToClose = activeSessionIdRef.current;
     activeSessionIdRef.current = null;
-    if (statsIntervalRef.current != null) {
-      window.clearInterval(statsIntervalRef.current);
-      statsIntervalRef.current = null;
-    }
+    metadataSocketRef.current?.close();
+    metadataSocketRef.current = null;
     webRtcPeerRef.current?.close();
     webRtcPeerRef.current = null;
     setSessionId(null);
@@ -244,7 +264,6 @@ export const LivePage: React.FC<LivePageProps> = ({ analytics, onAnalyticsUpdate
         await deleteSession(sessionToClose);
       } catch (error) {
         if (!(error instanceof CrowdApiError && error.status === 404)) {
-          addSystemLog?.(`[WARN] WebRTC fallback cleanup failed: ${getApiErrorMessage(error, 'Unknown API error')}`);
         }
       }
     }
@@ -263,8 +282,6 @@ export const LivePage: React.FC<LivePageProps> = ({ analytics, onAnalyticsUpdate
     setErrorMessage(null);
     setIsStreaming(true);
     onStreamingChange?.(true);
-    addSystemLog?.('[WEBCAM] Camera stream launched successfully.');
-    addSystemLog?.('[AI] YOLO11n + FastTracker inference loop active over HTTP frames.');
     startFrameLoop();
   };
 
@@ -304,16 +321,15 @@ export const LivePage: React.FC<LivePageProps> = ({ analytics, onAnalyticsUpdate
     if (!('RTCPeerConnection' in window)) {
       throw new Error('WebRTC is not supported by this browser.');
     }
-    const peer = new RTCPeerConnection();
+    const peer = new RTCPeerConnection({
+      // Keep browser-side candidate gathering aligned with the aiortc
+      // default.  A TURN relay is still required for restrictive NATs.
+      iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+    });
     webRtcPeerRef.current = peer;
-    mediaStream.getTracks().forEach((track) => peer.addTrack(track, mediaStream));
-    peer.ontrack = (event) => {
-      const [remoteStream] = event.streams;
-      if (remoteStream && videoRef.current) {
-        videoRef.current.srcObject = remoteStream;
-        void videoRef.current.play().catch(() => undefined);
-      }
-    };
+    mediaStream.getVideoTracks().forEach((track) => {
+      peer.addTransceiver(track, { direction: 'sendonly' });
+    });
     peer.onconnectionstatechange = () => {
       if (
         activeSessionIdRef.current
@@ -322,7 +338,7 @@ export const LivePage: React.FC<LivePageProps> = ({ analytics, onAnalyticsUpdate
         stopStream();
       }
     };
-    const offer = await peer.createOffer({ offerToReceiveVideo: true });
+    const offer = await peer.createOffer({ offerToReceiveVideo: false });
     await peer.setLocalDescription(offer);
     await waitForIceGathering(peer);
     const localDescription = peer.localDescription;
@@ -333,12 +349,10 @@ export const LivePage: React.FC<LivePageProps> = ({ analytics, onAnalyticsUpdate
     setSessionId(answer.session_id);
     onSessionChangeRef.current?.(answer.session_id);
     await peer.setRemoteDescription({ type: answer.type, sdp: answer.sdp });
+    await startMetadataSocket(answer.session_id);
     setActiveTransport('webrtc');
     setIsStreaming(true);
     onStreamingChange?.(true);
-    addSystemLog?.('[WEBCAM] WebRTC media stream connected.');
-    addSystemLog?.('[AI] YOLO11n + FastTracker annotated media track active.');
-    startWebRTCStatsPolling(answer.session_id);
   };
 
   const startStream = async () => {
@@ -353,8 +367,6 @@ export const LivePage: React.FC<LivePageProps> = ({ analytics, onAnalyticsUpdate
         stage: 'camera_permission',
         message: t.cameraPermission,
       } : previous);
-      addSystemLog?.('[AI] Detector/tracker warmup started in background.');
-      addSystemLog?.('[CAMERA] Requesting webcam permission in parallel.');
       let mediaStream: MediaStream;
       try {
         const constraints = {
@@ -396,7 +408,6 @@ export const LivePage: React.FC<LivePageProps> = ({ analytics, onAnalyticsUpdate
         stage: trackerReadyFromStatus(previous) ? 'session_starting' : 'camera_connected',
         message: trackerReadyFromStatus(previous) ? t.sessionStarting : t.cameraConnected,
       } : previous);
-      addSystemLog?.('[CAMERA] Webcam connected; waiting only for tracking readiness.');
 
       await trackingReadyPromise;
 
@@ -405,29 +416,21 @@ export const LivePage: React.FC<LivePageProps> = ({ analytics, onAnalyticsUpdate
         stage: 'session_starting',
         message: t.sessionStarting,
       } : previous);
-      addSystemLog?.('[AI] Tracking ready. Creating live API session while attributes continue warming.');
 
-      if (transport === 'webrtc') {
-        try {
-          await startWebRTCSession(mediaStream);
-        } catch (webrtcError) {
-          await cleanupWebRTCSession();
-          if (videoRef.current) {
-            videoRef.current.srcObject = mediaStream;
-            await videoRef.current.play();
-          }
-          addSystemLog?.(`[WARN] WebRTC unavailable: ${getApiErrorMessage(webrtcError, 'Unknown WebRTC error')}`);
-          addSystemLog?.('[INFO] Falling back to HTTP frame transport.');
-          await startHttpSession();
+      try {
+        await startWebRTCSession(mediaStream);
+      } catch {
+        await cleanupWebRTCSession();
+        if (videoRef.current) {
+          videoRef.current.srcObject = mediaStream;
+          await videoRef.current.play();
         }
-      } else {
         await startHttpSession();
       }
     } catch (err: any) {
       console.error('Camera stream error:', err);
       setErrorMessage(`Camera Error: ${err.message || 'Could not access webcam'}`);
       stopStream();
-      addSystemLog?.(`[ERROR] Failed to launch camera stream: ${err.message}`);
     } finally {
       isStartingRef.current = false;
       setIsStarting(false);
@@ -444,10 +447,8 @@ export const LivePage: React.FC<LivePageProps> = ({ analytics, onAnalyticsUpdate
     setSessionId(null);
     onSessionChangeRef.current?.(null);
 
-    if (statsIntervalRef.current != null) {
-      window.clearInterval(statsIntervalRef.current);
-      statsIntervalRef.current = null;
-    }
+    metadataSocketRef.current?.close();
+    metadataSocketRef.current = null;
     webRtcPeerRef.current?.close();
     webRtcPeerRef.current = null;
     setActiveTransport(null);
@@ -470,7 +471,6 @@ export const LivePage: React.FC<LivePageProps> = ({ analytics, onAnalyticsUpdate
     lastResultSequenceRef.current = null;
     cadenceMsRef.current = 150;
     latestTracksRef.current = [];
-    seenTracksRef.current.clear();
     setOverlayData(EMPTY_OVERLAY);
     setSelectedPerson(null);
     setIsStreaming(false);
@@ -479,12 +479,10 @@ export const LivePage: React.FC<LivePageProps> = ({ analytics, onAnalyticsUpdate
     setLatencyMs(null);
     setAiUpdateRateHz(null);
     onStreamingChangeRef.current?.(false);
-    addSystemLogRef.current?.('[STREAM] Camera stream stopped by user.');
 
     if (sessionToClose) {
       void deleteSession(sessionToClose).catch((error: unknown) => {
         if (!(error instanceof CrowdApiError && error.status === 404)) {
-          addSystemLogRef.current?.(`[WARN] Session cleanup failed: ${getApiErrorMessage(error, 'Unknown API error')}`);
         }
       });
     }
@@ -503,12 +501,10 @@ export const LivePage: React.FC<LivePageProps> = ({ analytics, onAnalyticsUpdate
     if (sessionId) {
       try {
         await resetSession(sessionId);
-        seenTracksRef.current.clear();
         latestTracksRef.current = [];
         lastResultSequenceRef.current = null;
         setOverlayData(EMPTY_OVERLAY);
         setSelectedPerson(null);
-        addSystemLog?.(`[SYSTEM] AI Tracker state & track memory reset successfully.`);
       } catch (error: unknown) {
         setErrorMessage(getApiErrorMessage(error, 'Unable to reset the AI session.'));
       }
@@ -516,7 +512,6 @@ export const LivePage: React.FC<LivePageProps> = ({ analytics, onAnalyticsUpdate
   };
 
   const latestTracksRef = useRef<OverlayTrack[]>([]);
-  const seenTracksRef = useRef<Map<number, string>>(new Map());
   const startFrameLoop = () => {
     if (intervalRef.current) clearTimeout(intervalRef.current);
     lastFrameTimeRef.current = performance.now();
@@ -594,31 +589,6 @@ export const LivePage: React.FC<LivePageProps> = ({ analytics, onAnalyticsUpdate
                   seats: overlay.seats ?? [],
                 });
 
-                if (currentTracks && currentTracks.length > 0) {
-                  currentTracks.forEach((tr) => {
-                    const trackId = tr.track_id;
-                    const personId = tr.person_id != null ? `P0${tr.person_id}` : `P0${trackId}`;
-                    const gender = tr.gender ? (tr.gender.toLowerCase().includes('female') ? 'Female-presenting' : 'Male-presenting') : 'Unclassified';
-                    const confidence = tr.confidence;
-                    const hasConf = typeof confidence === 'number' && confidence > 0;
-                    const confStr = hasConf ? `${(confidence * 100).toFixed(1)}%` : 'Classifying...';
-                    const stateKey = `${trackId}-${gender}-${confStr}`;
-
-                    if (!seenTracksRef.current.has(trackId)) {
-                      seenTracksRef.current.set(trackId, stateKey);
-                      addSystemLog?.(`[TRACKER] New Person Tracked: #${personId} (Track ID: T${trackId}).`);
-                      if (hasConf) {
-                        addSystemLog?.(`[AI CLASSIFICATION] Person #${personId} (T${trackId}) classified: ${gender} (Conf: ${confStr} | YuNet Net).`);
-                      } else {
-                        addSystemLog?.(`[AI CLASSIFICATION] Person #${personId} (T${trackId}) initial track acquired (YuNet classifying...).`);
-                      }
-                    } else if (seenTracksRef.current.get(trackId) !== stateKey) {
-                      seenTracksRef.current.set(trackId, stateKey);
-                      addSystemLog?.(`[AI UPDATE] Person #${personId} (T${trackId}) identity updated: ${gender} (${confStr}).`);
-                    }
-                  });
-                }
-
                 const analytics = res.analytics;
                 const liveStreamTelemetry = analytics?.runtime?.live_stream;
                 if (liveStreamTelemetry) {
@@ -671,7 +641,6 @@ export const LivePage: React.FC<LivePageProps> = ({ analytics, onAnalyticsUpdate
       canvas.height = frameHeight;
     }
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    if (activeTransport === 'webrtc') return;
     ctx.lineJoin = 'round';
     ctx.lineCap = 'round';
     ctx.font = `${Math.max(11, Math.round(canvas.width / 70))}px ui-monospace, SFMono-Regular, Menlo, monospace`;
@@ -769,7 +738,7 @@ export const LivePage: React.FC<LivePageProps> = ({ analytics, onAnalyticsUpdate
         ctx.fillText(label, x1 + 4, labelY - 5);
       }
     });
-  }, [activeTransport, labelMode, overlayData, overlays, selectedPerson]);
+  }, [labelMode, overlayData, overlays, selectedPerson]);
 
   useEffect(() => {
     drawOverlay();
@@ -873,7 +842,7 @@ export const LivePage: React.FC<LivePageProps> = ({ analytics, onAnalyticsUpdate
           </button>
 
           <div className="flex items-center space-x-1 bg-[#071120] border border-sky-500/40 p-1 rounded-lg text-xs font-mono">
-            {(['minimal', 'analytics', 'debug'] as LabelMode[]).map((mode) => (
+            {(['minimal', 'debug'] as LabelMode[]).map((mode) => (
               <button
                 key={mode}
                 onClick={() => setLabelMode(mode)}
@@ -888,22 +857,9 @@ export const LivePage: React.FC<LivePageProps> = ({ analytics, onAnalyticsUpdate
             ))}
           </div>
 
-          <div className="flex items-center space-x-1 bg-[#071120] border border-sky-500/40 p-1 rounded-lg text-xs font-mono">
-            {(['http', 'webrtc'] as TransportMode[]).map((mode) => (
-              <button
-                key={mode}
-                onClick={() => setTransport(mode)}
-                disabled={isStreaming}
-                className={`px-2 py-0.5 sm:py-1 rounded uppercase transition-all cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 ${
-                  transport === mode
-                    ? 'bg-cyan-400 text-slate-950 font-bold shadow-sm'
-                    : 'text-slate-400 hover:text-cyan-300'
-                }`}
-              >
-                {mode === 'http' ? 'HTTP Frame' : 'WebRTC'}
-              </button>
-            ))}
-          </div>
+          <span className="px-2 py-1 rounded bg-cyan-400/10 border border-cyan-400/30 text-cyan-300 text-[10px] font-mono uppercase">
+            WebRTC send-only · WS metadata · HTTP fallback
+          </span>
         </div>
       </div>
 

@@ -27,16 +27,14 @@ export const translations = {
     stationaryCount: 'đang đứng/ngồi yên',
     aiCoverage: 'ĐỘ PHỦ PHÂN LOẠI AI',
     highCapacity: 'Sức chứa mức cao',
-    calibratedArea: 'Tính trên diện tích 64 m²',
+    calibratedArea: 'Tính theo diện tích đã cấu hình',
     vacantSeats: 'chỗ ngồi còn trống',
-    classifierActive: 'Trạng thái AI phân loại tốt',
+    classifierCoverage: 'Độ phủ do backend báo cáo',
     flowTitle: 'TỐC ĐỘ LUỒNG RA / VÀO PHÒNG',
-    inRate: 'LUỒNG VÀO (IN)',
-    outRate: 'LUỒNG RA (OUT)',
-    netFlow: 'TỔNG LUỒNG THỰC TẾ',
-    hexagonTitle: 'BIỂU ĐỒ LỤC GIÁC MULTI-AXIS',
-    hexagonSub: 'Đánh giá cân bằng 6 chiều không gian, mật độ và dòng người',
-    equilibriumScore: 'Điểm Cân Bằng Hệ Thống:',
+    inRate: 'LUỒNG VÀO / PHÚT',
+    outRate: 'LUỒNG RA / PHÚT',
+    netFlow: 'NET / PHÚT',
+    crossingTotal: 'lượt tổng',
 
     // Live Page
     liveTitle: 'GIÁM SÁT LIVE // XỬ LÝ MÔ HÌNH AI',
@@ -120,14 +118,12 @@ export const translations = {
     // System Page
     systemTitle: 'THÔNG SỐ KỸ THUẬT SYSTEM TELEMETRY',
     systemSub: 'Chẩn đoán hiệu suất mô hình, tốc độ xử lý và trạng thái hàng đợi bộ đệm',
-    engineOnline: 'HỆ THỐNG HOẠT ĐỘNG TỐT',
     pipelineTitle: 'AI PIPELINE',
     fps3TierTitle: '3 TẦNG TỐC ĐỘ FPS',
     latenciesTitle: 'ĐỘ TRỄ LATENCY',
     bufferQueueTitle: 'HÀNG ĐỢI BỘ ĐỆM KHUNG HÌNH',
     detectorLabel: 'Mô hình phát hiện',
     trackerLabel: 'Thuật toán theo dõi',
-    deviceLabel: 'Thiết bị phần cứng',
     cameraFpsLabel: 'Tốc độ Video Camera',
     aiHzLabel: 'Tần số nhận bbox AI',
     modelFpsLabel: 'Tốc độ xử lý Backend',
@@ -137,10 +133,6 @@ export const translations = {
     processedFrames: 'Khung hình đã xử lý',
     replacedFrames: 'Khung hình bị bỏ qua',
     pendingFrames: 'Hàng đợi đang chờ',
-    logTitle: 'NHẬT KÝ STREAM HỆ THỐNG TRỰC TIẾP',
-
-    // Footer
-    systemOnline: 'HỆ THỐNG ONLINE',
   },
   en: {
     // Header & Navigation
@@ -168,16 +160,14 @@ export const translations = {
     stationaryCount: 'stationary',
     aiCoverage: 'AI COVERAGE',
     highCapacity: 'High Capacity Utilization',
-    calibratedArea: 'Calibrated per 64 m²',
+    calibratedArea: 'Based on configured area',
     vacantSeats: 'vacant seats',
-    classifierActive: 'Classifier Active',
+    classifierCoverage: 'Coverage reported by backend',
     flowTitle: 'ROOM FLOW RATE & EQUALIZER METRICS',
-    inRate: 'IN RATE',
-    outRate: 'OUT RATE',
-    netFlow: 'NET CROWD FLOW',
-    hexagonTitle: 'HEXAGON RADAR SLIDE',
-    hexagonSub: 'Multi-dimensional spatial, headcount & flow equilibrium',
-    equilibriumScore: 'System Equilibrium Score:',
+    inRate: 'IN / MINUTE',
+    outRate: 'OUT / MINUTE',
+    netFlow: 'NET / MINUTE',
+    crossingTotal: 'total crossings',
 
     // Live Page
     liveTitle: 'LIVE MONITOR // AI PROCESSING',
@@ -261,14 +251,12 @@ export const translations = {
     // System Page
     systemTitle: 'SYSTEM TELEMETRY // DIAGNOSTICS',
     systemSub: 'Isolated technical diagnostic metrics, model throughput, and buffer queue states',
-    engineOnline: 'BACKEND ENGINE ONLINE',
     pipelineTitle: 'AI PIPELINE',
     fps3TierTitle: '3-TIER FPS RATES',
     latenciesTitle: 'LATENCIES',
     bufferQueueTitle: 'FRAME BUFFER QUEUE',
     detectorLabel: 'Detector Model',
     trackerLabel: 'Tracker Algorithm',
-    deviceLabel: 'Execution Device',
     cameraFpsLabel: 'Camera FPS',
     aiHzLabel: 'AI Update Frequency',
     modelFpsLabel: 'Model Processing FPS',
@@ -278,9 +266,5 @@ export const translations = {
     processedFrames: 'Processed Frames',
     replacedFrames: 'Replaced (Dropped)',
     pendingFrames: 'Pending Queue',
-    logTitle: 'LIVE SERVER LOG STREAM',
-
-    // Footer
-    systemOnline: 'SYSTEM ONLINE',
   },
 };

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime
 import math
@@ -11,7 +12,7 @@ from typing import Any
 
 import cv2
 import numpy as np
-from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
@@ -293,28 +294,51 @@ def create_api_app(
         tags=["sessions"],
     )
     def get_session_stats(session_id: str) -> SessionStatsResponse:
-        """Return the whole latest analytics envelope for dashboard polling."""
+        """Return the latest analytics envelope for control/debug clients."""
 
-        state = manager.get_state(session_id)
-        result = state.result
-        payload: dict[str, Any] = {
-            "status": "ready" if result is not None else "waiting_for_frame",
-            "session": state.info.to_dict(),
-            "frame": (
-                {
-                    "sequence": result.sequence,
-                    "submitted_monotonic_seconds": result.submitted_at,
-                    "completed_monotonic_seconds": result.completed_at,
-                }
-                if result is not None
-                else None
-            ),
-            # This envelope contains all model measurements (tracking,
-            # identity, attributes, spatial/heatmap, classroom, and runtime).
-            "analytics": result.stats if result is not None else None,
-            "live_stream": state.telemetry,
-        }
-        return SessionStatsResponse.model_validate(_json_safe(payload))
+        return SessionStatsResponse.model_validate(_session_stats_payload(manager, session_id))
+
+    @app.websocket(f"{API_PREFIX}/sessions/{{session_id}}/metadata")
+    async def session_metadata_socket(websocket: WebSocket, session_id: str) -> None:
+        """Push compact latest-result metadata without polling HTTP.
+
+        The WebRTC media peer owns the inbound camera frames.  This channel is
+        deliberately metadata-only: it sends an analytics/result envelope only when the
+        capacity-one live processor publishes a newer sequence, so a slow
+        detector cannot create a stale outbound queue.
+        """
+
+        try:
+            manager.get(session_id)
+        except SessionNotFoundError:
+            await websocket.close(code=4404, reason="Session not found")
+            return
+
+        await websocket.accept()
+        last_sequence: int | None = None
+        try:
+            while True:
+                state = manager.get_state(session_id)
+                result = state.result
+                sequence = result.sequence if result is not None else None
+                if isinstance(sequence, int) and sequence != last_sequence:
+                    payload = _session_stats_payload_from_state(state)
+                    await websocket.send_json(payload)
+                    last_sequence = sequence
+                # This is an in-process wake-up cadence, not a network poll.
+                # Results are still sent only when sequence changes.
+                await asyncio.sleep(0.05)
+        except WebSocketDisconnect:
+            return
+        except SessionNotFoundError:
+            await websocket.close(code=4404, reason="Session expired")
+        except Exception:
+            # A browser/tab disconnect commonly surfaces as a transport-level
+            # exception.  Do not turn it into an ASGI worker error.
+            try:
+                await websocket.close(code=1011, reason="Metadata stream stopped")
+            except Exception:
+                pass
 
     @app.patch(
         f"{API_PREFIX}/sessions/{{session_id}}/layout",
@@ -466,6 +490,38 @@ def create_api_app(
         return VideoAnalysisResponse.model_validate(_json_safe(result))
 
     return app
+
+
+def _session_stats_payload(manager: SessionManager, session_id: str) -> dict[str, Any]:
+    """Build the shared REST/WebSocket latest-result envelope."""
+
+    return _session_stats_payload_from_state(manager.get_state(session_id))
+
+
+def _session_stats_payload_from_state(state: Any) -> dict[str, Any]:
+    """Serialize a previously-read state without repeating manager locking."""
+
+    result = state.result
+    payload: dict[str, Any] = {
+        "status": "ready" if result is not None else "waiting_for_frame",
+        "session": state.info.to_dict(),
+        "frame": (
+            {
+                "sequence": result.sequence,
+                "submitted_monotonic_seconds": result.submitted_at,
+                "completed_monotonic_seconds": result.completed_at,
+            }
+            if result is not None
+            else None
+        ),
+        # This envelope contains model measurements (tracking, identity,
+        # attributes, spatial/heatmap, classroom, and runtime), but never a
+        # JPEG or annotated video frame. The browser uses the overlay portion
+        # for Canvas and forwards the analytics sections to its dashboards.
+        "analytics": result.stats if result is not None else None,
+        "live_stream": state.telemetry,
+    }
+    return _json_safe(payload)
 
 
 def _error_response(status_code: int, code: str, message: str) -> JSONResponse:

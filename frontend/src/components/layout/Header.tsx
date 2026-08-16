@@ -1,11 +1,9 @@
 import React from 'react';
-import { Radio, ChevronDown, Clock, ShieldCheck, Globe } from 'lucide-react';
+import { Radio, Clock, ShieldCheck, Globe } from 'lucide-react';
 import type { Language } from '../../i18n/translations';
 import type { ApiAvailability } from '../../api/contracts';
 
 interface HeaderProps {
-  currentRoom: string;
-  onRoomChange: (room: string) => void;
   sessionDuration: string;
   lang: Language;
   onToggleLanguage: () => void;
@@ -15,8 +13,6 @@ interface HeaderProps {
 }
 
 export const Header: React.FC<HeaderProps> = ({
-  currentRoom,
-  onRoomChange,
   sessionDuration,
   lang,
   onToggleLanguage,
@@ -26,7 +22,7 @@ export const Header: React.FC<HeaderProps> = ({
 }) => {
   const apiStatusLabel: Record<ApiAvailability, string> = {
     checking: 'API Checking',
-    ready: 'YOLO11n Ready',
+    ready: 'API Ready',
     not_ready: 'API Not Ready',
     offline: 'API Offline',
   };
@@ -55,21 +51,8 @@ export const Header: React.FC<HeaderProps> = ({
         </div>
       </div>
 
-      {/* Center: Room Selector & Live Status */}
+      {/* Center: Live Status */}
       <div className="flex items-center space-x-2">
-        <div className="relative">
-          <select
-            value={currentRoom}
-            onChange={(e) => onRoomChange(e.target.value)}
-            className="appearance-none bg-[#091526] text-sky-200 text-xs sm:text-sm font-mono font-semibold border border-sky-500/40 rounded-lg px-2.5 py-1 sm:py-1.5 pr-7 focus:outline-none focus:border-cyan-400 transition-all cursor-pointer shadow-inner max-w-[130px] sm:max-w-none truncate"
-          >
-            <option value="Classroom A">Classroom A (Main Hall)</option>
-            <option value="Classroom B">Classroom B (Lab 102)</option>
-            <option value="Auditorium">Auditorium East</option>
-          </select>
-          <ChevronDown className="w-3.5 h-3.5 text-sky-400 absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none" />
-        </div>
-
         {isLive && (
           <div className="flex items-center space-x-1.5 bg-emerald-500/15 border border-emerald-400/40 px-2 sm:px-3 py-1 sm:py-1.5 rounded-lg text-emerald-300 text-[11px] sm:text-xs font-mono font-bold shadow-sm shadow-emerald-500/20">
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping" />
