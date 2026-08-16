@@ -680,6 +680,8 @@ class ClassroomAnalytics:
                 "people_per_m2": None,
                 "room_boundary_configured": False,
                 "physical_density_calibrated": False,
+                "camera_calibration_configured": False,
+                "calibration": None,
             }
         profile = self.config.room_profile
         geometry_usable = self._geometry_status != "aspect_ratio_mismatch"
@@ -729,6 +731,7 @@ class ClassroomAnalytics:
             "room_boundary": None if boundary is None else [list(point) for point in boundary],
             "physical_density_calibrated": area_m2 is not None and geometry_usable,
             "camera_calibration_configured": profile.calibration is not None,
+            "calibration": None if profile.calibration is None else profile.calibration.to_mapping(),
         }
 
     def _layout_statistics(self) -> dict[str, object]:
@@ -737,6 +740,7 @@ class ClassroomAnalytics:
                 "status": "not_configured",
                 "template": None,
                 "rows": None,
+                "block_columns": {},
                 "rules": None,
                 "reference_geometry_configured": False,
             }
@@ -748,6 +752,19 @@ class ClassroomAnalytics:
             "template": None if template is None else template.name,
             "rows": None if session is None else session.rows,
             "blocks": [] if template is None else list(template.block_names),
+            "block_columns": (
+                {}
+                if template is None
+                else {block.name: block.columns for block in template.blocks}
+            ),
+            "disabled_seats": (
+                []
+                if session is None
+                else [
+                    {"row": row, "block": block, "column": column}
+                    for row, block, column in sorted(session.disabled_seats)
+                ]
+            ),
             "reference_geometry_configured": bool(template is not None and template.reference_grid is not None),
             "reference_resolution": None if profile.reference_resolution is None else list(profile.reference_resolution),
             "rules": profile.layout_rules.to_mapping(),

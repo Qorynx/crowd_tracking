@@ -12,11 +12,24 @@ from typing import Any
 import cv2
 import numpy as np
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
-from fastapi.responses import JSONResponse, RedirectResponse, Response
-from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 
 from src.api.config import ApiSettings
+from src.api.contracts import (
+    ErrorEnvelope,
+    FrameResponse,
+    HealthResponse,
+    ReadyResponse,
+    SessionEnvelope,
+    SessionCalibrationRequest,
+    SessionConfigurationResponse,
+    SessionLayoutRequest,
+    SessionStatsResponse,
+    WarmupStatusResponse,
+    VideoAnalysisResponse,
+)
 from src.api.sessions import (
     ApiSessionError,
     DemoSessionManager,
@@ -24,6 +37,7 @@ from src.api.sessions import (
     SessionInitializationError,
     SessionManager,
     SessionNotFoundError,
+    SessionWarmupInProgress,
     UnsupportedSessionModeError,
     build_crowd_pipeline_factory,
 )
@@ -40,8 +54,13 @@ from src.api.webrtc import WebRTCPeerRegistry, create_webrtc_router
 
 
 API_PREFIX = "/api/v1"
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-FRONTEND_STATIC_DIR = PROJECT_ROOT / "FE_CyberHUD_Luxury" / "src" / "api" / "static"
+SESSION_ERROR_RESPONSES = {
+    404: {"model": ErrorEnvelope},
+    409: {"model": ErrorEnvelope},
+    422: {"model": ErrorEnvelope},
+    429: {"model": ErrorEnvelope},
+    503: {"model": ErrorEnvelope},
+}
 
 
 class CreateSessionRequest(BaseModel):
@@ -65,12 +84,25 @@ def create_api_app(
     """
 
     effective_settings = settings or ApiSettings.from_environment()
-    pipeline_factory = build_crowd_pipeline_factory(
-        {mode: str(path) for mode, path in effective_settings.modes.items()},
+    owns_session_manager = session_manager is None
+    mode_configs = {mode: str(path) for mode, path in effective_settings.modes.items()}
+    # Live uses staged warmup: construct weights first, warm YOLO/tracker, then
+    # continue optional attribute warmup in the background. Upload analysis keeps
+    # the legacy fully-warmed factory because it is synchronous by design.
+    live_pipeline_factory = build_crowd_pipeline_factory(
+        mode_configs,
         gender_model_path=effective_settings.gender_model_path,
+        warmup=False,
+        defer_attribute_models=True,
+    )
+    pipeline_factory = build_crowd_pipeline_factory(
+        mode_configs,
+        gender_model_path=effective_settings.gender_model_path,
+        warmup=True,
+        defer_attribute_models=False,
     )
     manager: SessionManager = session_manager or DemoSessionManager(
-        pipeline_factory,
+        live_pipeline_factory,
         allowed_modes=tuple(effective_settings.modes),
         max_sessions=effective_settings.max_live_sessions,
         ttl_seconds=effective_settings.session_ttl_seconds,
@@ -89,6 +121,13 @@ def create_api_app(
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
+        # The production one-camera manager owns a persistent warm slot.  Start
+        # its staged warm-up as a daemon thread during app startup so the first
+        # browser click can claim an already-prepared detector/tracker. Injected
+        # managers (tests, notebooks, alternate deployments) keep explicit
+        # lifecycle control and are never warmed implicitly.
+        if owns_session_manager:
+            manager.start_warmup("classroom_demo")
         try:
             yield
         finally:
@@ -113,14 +152,17 @@ def create_api_app(
         ),
         lifespan=lifespan,
     )
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=list(effective_settings.frontend_origins),
+        allow_credentials=False,
+        allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+        allow_headers=["*"],
+    )
     app.state.api_settings = effective_settings
     app.state.session_manager = manager
     app.state.video_analyzer = analyzer
     app.state.webrtc_peers = webrtc_peers
-    if FRONTEND_STATIC_DIR.is_dir():
-        # The CyberHUD frontend is a static same-origin client. Mounting it
-        # under /app keeps its relative /api/v1 requests on this FastAPI app.
-        app.mount("/app", StaticFiles(directory=FRONTEND_STATIC_DIR, html=True), name="cyberhud_frontend")
     app.include_router(
         create_webrtc_router(
             manager,
@@ -140,6 +182,10 @@ def create_api_app(
     @app.exception_handler(SessionCapacityError)
     async def session_capacity_handler(_request, exc: SessionCapacityError) -> JSONResponse:
         return _error_response(429, "live_session_capacity_reached", str(exc))
+
+    @app.exception_handler(SessionWarmupInProgress)
+    async def session_warmup_handler(_request, exc: SessionWarmupInProgress) -> JSONResponse:
+        return _error_response(409, "session_warmup_in_progress", str(exc))
 
     @app.exception_handler(SessionInitializationError)
     async def session_initialization_handler(_request, exc: SessionInitializationError) -> JSONResponse:
@@ -173,25 +219,19 @@ def create_api_app(
     async def video_error_handler(_request, exc: VideoAnalysisError) -> JSONResponse:
         return _error_response(422, "video_analysis_failed", str(exc))
 
-    @app.get("/", include_in_schema=False)
-    def api_root() -> RedirectResponse:
-        """Make the deployed API URL useful without adding a second UI surface."""
-
-        return RedirectResponse(url="/docs", status_code=307)
-
-    @app.get(f"{API_PREFIX}/health", tags=["service"])
-    def health() -> dict[str, Any]:
+    @app.get(f"{API_PREFIX}/health", response_model=HealthResponse, tags=["service"])
+    def health() -> HealthResponse:
         """Liveness check: does not initialize a pipeline or a GPU model."""
 
-        return _json_safe(
+        return HealthResponse.model_validate(_json_safe(
             {
                 "status": "ok",
                 "service": "crowd-analytics-demo-api",
                 "sessions": manager.health(),
             }
-        )
+        ))
 
-    @app.get(f"{API_PREFIX}/ready", tags=["service"])
+    @app.get(f"{API_PREFIX}/ready", response_model=ReadyResponse, tags=["service"])
     def ready() -> JSONResponse:
         """Report whether the configured default profile can be created on demand."""
 
@@ -202,19 +242,57 @@ def create_api_app(
             content={"status": "ready" if is_ready else "not_ready", "service": "crowd-analytics-demo-api", **details},
         )
 
-    @app.post(f"{API_PREFIX}/sessions", status_code=201, tags=["sessions"])
-    def create_session(request: CreateSessionRequest) -> dict[str, Any]:
+    @app.post(
+        f"{API_PREFIX}/warmup",
+        response_model=WarmupStatusResponse,
+        tags=["service"],
+    )
+    def start_model_warmup(request: CreateSessionRequest) -> WarmupStatusResponse:
+        """Start idempotent background model preparation for a live mode."""
+
+        status = manager.start_warmup(request.mode)
+        return WarmupStatusResponse.model_validate(_json_safe(status))
+
+    @app.get(
+        f"{API_PREFIX}/warmup",
+        response_model=WarmupStatusResponse,
+        tags=["service"],
+    )
+    def get_model_warmup_status(mode: str = Query(default="default")) -> WarmupStatusResponse:
+        """Return background model warmup progress without starting work."""
+
+        status = manager.warmup_status(mode)
+        return WarmupStatusResponse.model_validate(_json_safe(status))
+
+    @app.post(
+        f"{API_PREFIX}/sessions",
+        response_model=SessionEnvelope,
+        responses=SESSION_ERROR_RESPONSES,
+        status_code=201,
+        tags=["sessions"],
+    )
+    def create_session(request: CreateSessionRequest) -> SessionEnvelope:
         """Create the one persistent tracker/person-ID state for a media peer."""
 
         session = manager.create_session(request.mode, request.camera_id)
-        return _json_safe({"status": "created", "session": session.to_dict()})
+        return SessionEnvelope.model_validate(_json_safe({"status": "created", "session": session.to_dict()}))
 
-    @app.get(f"{API_PREFIX}/sessions/{{session_id}}", tags=["sessions"])
-    def get_session(session_id: str) -> dict[str, Any]:
-        return _json_safe({"status": "active", "session": manager.get(session_id).to_dict()})
+    @app.get(
+        f"{API_PREFIX}/sessions/{{session_id}}",
+        response_model=SessionEnvelope,
+        responses={404: {"model": ErrorEnvelope}},
+        tags=["sessions"],
+    )
+    def get_session(session_id: str) -> SessionEnvelope:
+        return SessionEnvelope.model_validate(_json_safe({"status": "active", "session": manager.get(session_id).to_dict()}))
 
-    @app.get(f"{API_PREFIX}/sessions/{{session_id}}/stats", tags=["sessions"])
-    def get_session_stats(session_id: str) -> dict[str, Any]:
+    @app.get(
+        f"{API_PREFIX}/sessions/{{session_id}}/stats",
+        response_model=SessionStatsResponse,
+        responses={404: {"model": ErrorEnvelope}},
+        tags=["sessions"],
+    )
+    def get_session_stats(session_id: str) -> SessionStatsResponse:
         """Return the whole latest analytics envelope for dashboard polling."""
 
         state = manager.get_state(session_id)
@@ -236,22 +314,79 @@ def create_api_app(
             "analytics": result.stats if result is not None else None,
             "live_stream": state.telemetry,
         }
-        return _json_safe(payload)
+        return SessionStatsResponse.model_validate(_json_safe(payload))
 
-    @app.post(f"{API_PREFIX}/sessions/{{session_id}}/reset", tags=["sessions"])
-    def reset_session(session_id: str) -> dict[str, Any]:
+    @app.patch(
+        f"{API_PREFIX}/sessions/{{session_id}}/layout",
+        response_model=SessionConfigurationResponse,
+        responses={404: {"model": ErrorEnvelope}, 409: {"model": ErrorEnvelope}, 422: {"model": ErrorEnvelope}},
+        tags=["sessions"],
+    )
+    def update_session_layout(session_id: str, request: SessionLayoutRequest) -> SessionConfigurationResponse:
+        """Update rows/disabled seats for one running classroom session."""
+
+        session = manager.get(session_id)
+        processor = manager.get_processor(session_id)
+        try:
+            classroom = processor.apply_session_layout(request.session_layout)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail={"code": "classroom_not_configured", "message": str(exc)}) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail={"code": "invalid_session_layout", "message": str(exc)}) from exc
+        return SessionConfigurationResponse.model_validate(
+            _json_safe({"status": "updated", "session": session.to_dict(), "classroom": classroom})
+        )
+
+    @app.patch(
+        f"{API_PREFIX}/sessions/{{session_id}}/calibration",
+        response_model=SessionConfigurationResponse,
+        responses={404: {"model": ErrorEnvelope}, 409: {"model": ErrorEnvelope}, 422: {"model": ErrorEnvelope}},
+        tags=["sessions"],
+    )
+    def update_session_calibration(session_id: str, request: SessionCalibrationRequest) -> SessionConfigurationResponse:
+        """Persist four-or-more floor correspondences for one running session."""
+
+        session = manager.get(session_id)
+        processor = manager.get_processor(session_id)
+        try:
+            classroom = processor.apply_room_calibration(request.calibration)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail={"code": "classroom_not_configured", "message": str(exc)}) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail={"code": "invalid_calibration", "message": str(exc)}) from exc
+        return SessionConfigurationResponse.model_validate(
+            _json_safe({"status": "updated", "session": session.to_dict(), "classroom": classroom})
+        )
+
+    @app.post(
+        f"{API_PREFIX}/sessions/{{session_id}}/reset",
+        response_model=SessionEnvelope,
+        responses={404: {"model": ErrorEnvelope}, 409: {"model": ErrorEnvelope}},
+        tags=["sessions"],
+    )
+    def reset_session(session_id: str) -> SessionEnvelope:
         """Reset FastTracker, stream person IDs, counters, and heatmap together."""
 
         session = manager.reset(session_id)
-        return _json_safe({"status": "reset", "session": session.to_dict()})
+        return SessionEnvelope.model_validate(_json_safe({"status": "reset", "session": session.to_dict()}))
 
-    @app.delete(f"{API_PREFIX}/sessions/{{session_id}}", status_code=204, tags=["sessions"])
+    @app.delete(
+        f"{API_PREFIX}/sessions/{{session_id}}",
+        responses={404: {"model": ErrorEnvelope}},
+        status_code=204,
+        tags=["sessions"],
+    )
     async def delete_session(session_id: str) -> Response:
         await webrtc_peers.close_peer(session_id)
         manager.close(session_id)
         return Response(status_code=204)
 
-    @app.post(f"{API_PREFIX}/sessions/{{session_id}}/frame", tags=["sessions"])
+    @app.post(
+        f"{API_PREFIX}/sessions/{{session_id}}/frame",
+        response_model=FrameResponse,
+        responses={400: {"model": ErrorEnvelope}, 404: {"model": ErrorEnvelope}, 409: {"model": ErrorEnvelope}, 415: {"model": ErrorEnvelope}},
+        tags=["sessions"],
+    )
     async def submit_session_frame(
         session_id: str,
         file: UploadFile = File(..., description="JPEG/PNG frame captured by the browser camera."),
@@ -260,7 +395,7 @@ def create_api_app(
             ge=0,
             description="Only include an annotated image when a newer result exists.",
         ),
-    ) -> dict[str, Any]:
+    ) -> FrameResponse:
         """Accept one browser frame and return the newest completed annotation.
 
         The model worker remains asynchronous and latest-frame-only.  The
@@ -298,13 +433,18 @@ def create_api_app(
             "analytics": analytics_payload,
             "overlay": overlay_payload,
         }
-        return _json_safe(response)
+        return FrameResponse.model_validate(_json_safe(response))
 
-    @app.post(f"{API_PREFIX}/video/analyze", tags=["video"])
+    @app.post(
+        f"{API_PREFIX}/video/analyze",
+        response_model=VideoAnalysisResponse,
+        responses={413: {"model": ErrorEnvelope}, 415: {"model": ErrorEnvelope}, 422: {"model": ErrorEnvelope}, 429: {"model": ErrorEnvelope}},
+        tags=["video"],
+    )
     def analyze_short_video(
         file: UploadFile = File(..., description="Short video clip; default demo limit is 60 seconds / 64 MiB."),
         mode: str = Form("default"),
-    ) -> dict[str, Any]:
+    ) -> VideoAnalysisResponse:
         """Synchronous short-clip fallback; it never changes a live session's tracker."""
 
         # A clip uses a reset tracker/analytics state with warm model weights.
@@ -323,13 +463,14 @@ def create_api_app(
             content_type=file.content_type,
             mode=mode,
         )
-        return _json_safe(result)
+        return VideoAnalysisResponse.model_validate(_json_safe(result))
 
     return app
 
 
 def _error_response(status_code: int, code: str, message: str) -> JSONResponse:
-    return JSONResponse(status_code=status_code, content={"detail": {"code": code, "message": message}})
+    payload = ErrorEnvelope(detail={"code": code, "message": message})
+    return JSONResponse(status_code=status_code, content=payload.model_dump())
 
 
 def _json_safe(value: Any) -> Any:

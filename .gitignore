@@ -45,3 +45,11 @@ Thumbs.db
 /artifacts/**/metrics.json
 /runs/
 /.ultralytics*/
+
+# React/Vite frontend dependencies and generated output
+/frontend/node_modules/
+/frontend/dist/
+/frontend/.vite/
+/frontend/*.tsbuildinfo
+/frontend/.env.local
+/frontend/.env.*.local

@@ -78,6 +78,16 @@ The WebRTC offer endpoint is optional. For a self-hosted WebRTC demo, install
 signaling/peer/TURN adapter and is not represented as a production promise by
 this MVP.
 
+To build the API as an independent container, provision the model assets first
+and build from the repository root. The image exposes port 8000 and does not
+contain the React bundle:
+
+```powershell
+.\.venv\Scripts\python.exe tools\prepare_production_assets.py
+docker build -t crowd-tracking-api .
+docker run --rm -p 8000:8000 -e FRONTEND_ORIGINS=https://your-frontend.example crowd-tracking-api
+```
+
 ## Modal API deployment
 
 Modal packages the API and the four provisioned local assets into its image;
@@ -90,9 +100,34 @@ it does not upload the local dataset or development material.
 .\.venv\Scripts\modal.exe deploy deploy\modal_app.py
 ```
 
-The Modal deployment is API-only: `/` redirects to `/docs`, and routes live
-under `/api/v1`. It is configured for one stateful live session, appropriate
-for the demo's GPU capacity.
+The Modal deployment is API-only: routes live under `/api/v1`; the React
+frontend is deployed independently. It is configured for one stateful live
+session, appropriate for the demo's GPU capacity.
+
+## React dashboard workspace
+
+The target dashboard is now versioned inside this repository at
+`frontend/`, which is the only frontend source of truth. FastAPI does not
+serve frontend files.
+
+Run the API from the repository root and the React dashboard in a second
+terminal:
+
+```powershell
+.\.venv\Scripts\python.exe -m uvicorn src.api.app:create_api_app --factory --host 127.0.0.1 --port 8000
+cd frontend
+npm ci
+npm run dev
+```
+
+The React dev server proxies same-origin `/api` requests to the FastAPI server.
+Open `http://127.0.0.1:3000/` in development. For Vercel/Netlify, set
+`VITE_API_BASE_URL` to the public FastAPI origin and use `frontend/` as the
+project root; the build output is `frontend/dist`.
+See [docs/frontend-migration.md](docs/frontend-migration.md) for deployment
+boundaries.
+The REST envelope and error contract are documented in
+[docs/api-contract.md](docs/api-contract.md).
 
 ## Scope and privacy
 

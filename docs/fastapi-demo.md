@@ -41,7 +41,9 @@ automatic download cache.
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `GET` | `/api/v1/health` | Lightweight liveness and live-session capacity; never warms a model. |
-| `GET` | `/api/v1/ready` | Checks that the configured profiles are present. Models warm on session creation. |
+| `GET` | `/api/v1/ready` | Checks config/model assets only; it is not the runtime model-ready signal. |
+| `POST` | `/api/v1/warmup` | Starts an idempotent staged warm-up for a live mode and returns its current state. |
+| `GET` | `/api/v1/warmup?mode=classroom_demo` | Polls detector/tracker/attribute readiness without creating a session. |
 | `POST` | `/api/v1/sessions` | Creates a stateful tracker session for lifecycle/testing use. |
 | `GET` | `/api/v1/sessions/{session_id}` | Gets session metadata and remaining TTL. |
 | `GET` | `/api/v1/sessions/{session_id}/stats` | Gets the latest complete analytics/dashboard snapshot. |
@@ -49,6 +51,19 @@ automatic download cache.
 | `DELETE` | `/api/v1/sessions/{session_id}` | Closes the live worker and releases its tracking state. |
 | `POST` | `/api/v1/webrtc/offer` | Self-hosted browser WebRTC signaling; creates the live session and returns the SDP answer. |
 | `POST` | `/api/v1/video/analyze` | Optional bounded short-video analysis fallback. |
+
+The production manager starts a background warm-up for `classroom_demo` during
+application startup and keeps the resulting pipeline in a one-slot warm pool.
+`POST /warmup` is still safe to call from a browser: it returns the existing
+state instead of loading a second copy. A live session claims that pipeline,
+resets only stream state, and returns it to the pool on `DELETE`.
+
+Warm-up is staged. `tracking_ready` means YOLO and FastTracker can accept live
+frames while `attributes_ready` is still false; face/body attributes are then
+warmed in the background. The React client shows camera/tracker/attributes
+steps rather than presenting the backend's approximate progress number as an
+exact percentage. Browser camera readiness is local to `getUserMedia()` and is
+therefore not reported by `/ready`.
 
 All application errors use a compact envelope such as:
 

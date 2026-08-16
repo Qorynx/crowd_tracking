@@ -34,9 +34,8 @@ _REQUIRED_MODEL_ASSET_IDS = (
     "gender_classifier",
     "body_gender_classifier",
 )
-# `api` is a first-class runtime package: the Modal ASGI app is API-only. This
-# preserves one owner for every stateful FastTracker/person_id pipeline. The
-# legacy Gradio UI remains a separate local demo in `app.py`.
+# `api` is a first-class runtime package: one manager owns every stateful
+# FastTracker/person_id pipeline. The frontend is deployed independently.
 RUNTIME_PACKAGES = ("analytics", "api", "inference", "models", "tracking")
 
 
@@ -197,12 +196,11 @@ image = _runtime_image()
 @modal.concurrent(max_inputs=1)
 @modal.asgi_app()
 def web():
-    """Serve the API-only Modal demonstration.
+    """Serve the API-only Modal deployment.
 
     The FastAPI session manager is the sole owner of the T4's live pipeline,
     preserving FastTracker and session-scoped person-ID continuity.  The
-    existing Gradio application is intentionally left as a separate local
-    entry point until both surfaces can share one manager safely.
+    The React dashboard is deployed independently from the `frontend/` root.
     """
 
     from src.api.app import create_api_app

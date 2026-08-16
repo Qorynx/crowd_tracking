@@ -210,6 +210,43 @@ class LiveFrameProcessor:
                     self._resetting = False
                     self._condition.notify_all()
 
+    def apply_session_layout(self, session_layout: dict[str, Any]) -> dict[str, Any]:
+        """Apply a lightweight classroom mutation without racing inference."""
+
+        return self._apply_pipeline_mutation("apply_session_layout", session_layout)
+
+    def apply_room_calibration(self, calibration: dict[str, Any]) -> dict[str, Any]:
+        """Apply session-scoped calibration without racing inference."""
+
+        return self._apply_pipeline_mutation("apply_room_calibration", calibration)
+
+    def _apply_pipeline_mutation(self, method_name: str, payload: dict[str, Any]) -> dict[str, Any]:
+        with self._lifecycle_lock:
+            with self._condition:
+                if self._closed:
+                    raise RuntimeError("The live session is closed.")
+                self._resetting = True
+                self._generation += 1
+                if self._pending is not None:
+                    self._dropped_reset += 1
+                    self._pending = None
+                while self._processing:
+                    self._condition.wait()
+            try:
+                method = getattr(self.pipeline, method_name, None)
+                if not callable(method):
+                    raise RuntimeError(f"The selected pipeline does not support {method_name}.")
+                return method(payload)
+            finally:
+                with self._condition:
+                    # A layout/calibration mutation invalidates the previous
+                    # overlay, but intentionally keeps tracker/counter state.
+                    self._last_result = None
+                    self._last_error = None
+                    self._last_pipeline_timestamp = None
+                    self._resetting = False
+                    self._condition.notify_all()
+
     def close(self) -> None:
         """Stop the worker before releasing the pipeline's tracker/model state."""
 

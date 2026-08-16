@@ -10,6 +10,7 @@ from __future__ import annotations
 from contextlib import nullcontext
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from threading import RLock
 from time import perf_counter
 from typing import Any, Mapping, Sequence
 
@@ -27,6 +28,7 @@ from src.tracking.tracker_config import (
     PERSIST_TRACKER_ACROSS_FRAMES,
     TrackerProfile,
     ensure_tracker_backend_available,
+    ensure_tracker_reid_runtime_available,
     reset_attached_trackers,
 )
 
@@ -480,12 +482,18 @@ class ModelRuntime:
         gender_model_path: Path | None,
         device: torch.device,
         tracker_profile: TrackerProfile,
+        defer_attribute_models: bool = False,
     ) -> None:
         self.config = pipeline_config
         self.project_root = project_root
         self.gender_model_path = gender_model_path
         self.device = device
         self.tracker_profile = tracker_profile
+        self.defer_attribute_models = bool(defer_attribute_models)
+        self._attribute_lock = RLock()
+        self._attributes_loaded = False
+        self._attributes_ready = False
+        self._tracking_ready = False
         router = dict(self.config.get("attribute_router", {}) or {})
         self.attribute_router_mode = str(router.get("mode", "face_first")).strip().lower()
         self.face_enabled = self.attribute_router_mode != "body_only"
@@ -495,6 +503,16 @@ class ModelRuntime:
         self.yunet = None
         self.gender_model = None
         self.gender_transform = None
+        # Keep the optional body branch's public state valid even while its
+        # checkpoint is deliberately deferred.  The live pipeline can process
+        # detector/tracker frames before attribute models are loaded.
+        body_config = self.config.get("body_gender_classifier", {})
+        self.body_enabled = bool(body_config.get("enabled", False))
+        self.body_model: BodyGenderClassifier | None = None
+        self.body_transform = None
+        self.body_temperature = 1.0
+        self._body_input_height = 0
+        self._body_input_width = 0
         # Detector execution mode and max_det are applied while Ultralytics
         # creates its predictor. They therefore cannot be safely changed on a
         # live model after the first track call.
@@ -510,10 +528,76 @@ class ModelRuntime:
         }
         self._reset_detector_telemetry()
         self._init_yolo()
-        if self.face_enabled:
-            self._init_yunet()
-            self._init_gender_classifier()
-        self._init_body_gender_classifier()
+        if not self.defer_attribute_models:
+            self.ensure_attribute_models()
+
+    @property
+    def detector_ready(self) -> bool:
+        return getattr(self, "yolo", None) is not None
+
+    @property
+    def tracker_ready(self) -> bool:
+        return bool(self._tracking_ready)
+
+    @property
+    def attributes_ready(self) -> bool:
+        return bool(self._attributes_ready)
+
+    @property
+    def attributes_loaded(self) -> bool:
+        return bool(self._attributes_loaded)
+
+    def ensure_attribute_models(self) -> None:
+        """Load attribute weights exactly once, without running dummy inference."""
+
+        with self._attribute_lock:
+            if self._attributes_loaded:
+                return
+            if self.face_enabled:
+                self._init_yunet()
+                self._init_gender_classifier()
+            self._init_body_gender_classifier()
+            self._attributes_loaded = True
+            if not self.defer_attribute_models:
+                self._attributes_ready = True
+
+    def warmup_tracking(self, frame_shape: tuple[int, int] = (480, 640)) -> None:
+        """Warm only YOLO + tracker, the critical path for live boxes/counts."""
+
+        height, width = frame_shape
+        if height < 32 or width < 32:
+            raise ValueError("warmup frame dimensions must be at least 32 pixels")
+        blank_frame = np.zeros((height, width, 3), dtype=np.uint8)
+        self.active_tracks(blank_frame)
+        if self.device.type == "cuda":
+            torch.cuda.synchronize(self.device)
+        self.reset_tracker()
+        self._tracking_ready = True
+
+    def warmup_attributes(self, frame_shape: tuple[int, int] = (480, 640)) -> None:
+        """Load and warm face/body attributes after tracking is already usable."""
+
+        height, width = frame_shape
+        if height < 32 or width < 32:
+            raise ValueError("warmup frame dimensions must be at least 32 pixels")
+        self.ensure_attribute_models()
+        with self._attribute_lock:
+            if self.face_enabled:
+                if self.yunet is None or self.gender_model is None:
+                    raise RuntimeError("Face runtime was enabled but failed to initialize.")
+                self.yunet.setInputSize((128, 128))
+                self.yunet.detect(np.zeros((128, 128, 3), dtype=np.uint8))
+                face_size = int(self.config["gender_classifier"]["input_size"])
+                face_batch = torch.zeros((1, 3, face_size, face_size), device=self.device)
+                with torch.inference_mode(), self._autocast_context():
+                    self.gender_model(face_batch)
+            if self.body_model is not None and bool(self.config.get("runtime", {}).get("warmup_body_classifier", True)):
+                input_height = self._body_input_height
+                input_width = self._body_input_width
+                self._warmup_body_classifier(input_height, input_width)
+            if self.device.type == "cuda":
+                torch.cuda.synchronize(self.device)
+            self._attributes_ready = True
 
     def _init_yolo(self) -> None:
         configured_model = Path(self.config["person_detector"]["model_path"])
@@ -521,7 +605,8 @@ class ModelRuntime:
         if not resolved_model.is_file():
             raise FileNotFoundError(
                 "Person detector checkpoint not found: "
-                f"{resolved_model}. Provision and verify the configured local asset with "
+                f"{resolved_model}. automatic Ultralytics model downloads are intentionally disabled. "
+                "Provision and verify the configured local asset with "
                 "`python tools/prepare_production_assets.py` before starting the pipeline."
             )
         try:
@@ -529,6 +614,7 @@ class ModelRuntime:
         except ImportError as error:
             raise RuntimeError("Install ultralytics before running the pipeline.") from error
         ensure_tracker_backend_available(self.tracker_profile.tracker_type)
+        ensure_tracker_reid_runtime_available(self.tracker_profile)
         self._detector_settings()
         # Passing only a verified absolute/local path prevents Ultralytics from
         # treating a bare official model name as a download request.
@@ -800,7 +886,7 @@ class ModelRuntime:
             "conf": settings.tracker_input_confidence,
             "iou": settings.iou_threshold,
             "max_det": settings.max_det,
-            "tracker": str(self.tracker_profile.path),
+            "tracker": str(getattr(self.tracker_profile, "runtime_path", None) or self.tracker_profile.path),
             "verbose": False,
         }
         if settings.end2end is not None:
@@ -843,6 +929,8 @@ class ModelRuntime:
             "mode_locked": self._detector_mode_lock is not None,
             "iou_effective": self._effective_end2end is not True,
             "tracker_low_threshold": tracker_low,
+            # Compatibility alias retained for older telemetry consumers.
+            "bytetrack_low_threshold": tracker_low,
             "full_low_score_band_available": low_band_complete,
             "full_low_score_band_required": settings.require_full_low_score_recovery,
             "low_score_band_note": (
@@ -985,8 +1073,8 @@ class ModelRuntime:
             ]
         )
         self.body_temperature = temperature
-        if bool(self.config.get("runtime", {}).get("warmup_body_classifier", True)):
-            self._warmup_body_classifier(input_height, input_width)
+        self._body_input_height = input_height
+        self._body_input_width = input_width
 
     def _warmup_body_classifier(self, input_height: int, input_width: int) -> None:
         """Pay CUDA's first-forward cost while the stream is still initializing.
@@ -1016,29 +1104,10 @@ class ModelRuntime:
         self._reset_detector_telemetry()
 
     def warmup(self, frame_shape: tuple[int, int] = (480, 640)) -> None:
-        """Initialize live inference paths before a real webcam frame is counted.
+        """Warm the complete legacy path; staged callers use the two methods above."""
 
-        ``YOLO.track`` must see ``persist=True`` on its first call, so warm-up goes through
-        ``active_tracks`` and then resets the attached tracker.  YuNet and the face classifier
-        are also touched once to avoid a first-person latency spike during a presentation.
-        """
-        height, width = frame_shape
-        if height < 32 or width < 32:
-            raise ValueError("warmup frame dimensions must be at least 32 pixels")
-        blank_frame = np.zeros((height, width, 3), dtype=np.uint8)
-        self.active_tracks(blank_frame)
-        if self.face_enabled:
-            if self.yunet is None or self.gender_model is None:
-                raise RuntimeError("Face runtime was enabled but failed to initialize.")
-            self.yunet.setInputSize((128, 128))
-            self.yunet.detect(np.zeros((128, 128, 3), dtype=np.uint8))
-            face_size = int(self.config["gender_classifier"]["input_size"])
-            face_batch = torch.zeros((1, 3, face_size, face_size), device=self.device)
-            with torch.inference_mode(), self._autocast_context():
-                self.gender_model(face_batch)
-        if self.device.type == "cuda":
-            torch.cuda.synchronize(self.device)
-        self.reset_tracker()
+        self.warmup_tracking(frame_shape)
+        self.warmup_attributes(frame_shape)
 
     def active_tracks(self, frame: np.ndarray) -> dict[int, BBox]:
         track_kwargs, settings = self._track_kwargs(frame)
