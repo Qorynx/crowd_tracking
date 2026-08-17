@@ -116,6 +116,23 @@ class VideoAnalysisResponse(BaseModel):
     artifacts: dict[str, Any] = Field(default_factory=dict)
 
 
+class VideoJobAcceptedResponse(BaseModel):
+    status: Literal["queued"]
+    job_id: str
+    status_url: str
+    poll_after_ms: int = 1_000
+
+
+class VideoJobStatusResponse(BaseModel):
+    job_id: str
+    status: Literal["queued", "processing", "completed", "failed"]
+    progress: float = Field(default=0.0, ge=0.0, le=1.0)
+    stage: str
+    message: str
+    result: VideoAnalysisResponse | None = None
+    error: ErrorDetail | None = None
+
+
 __all__ = [
     "ErrorDetail",
     "ErrorEnvelope",
@@ -131,4 +148,6 @@ __all__ = [
     "SessionMetadata",
     "SessionStatsResponse",
     "VideoAnalysisResponse",
+    "VideoJobAcceptedResponse",
+    "VideoJobStatusResponse",
 ]

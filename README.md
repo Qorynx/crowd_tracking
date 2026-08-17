@@ -76,12 +76,14 @@ guide, request examples, and response metrics are in
 
 The live camera transport is optional. For a self-hosted demo, install
 `deploy/requirements-webrtc.txt`; the browser sends camera media to aiortc and
-keeps its raw `<video>` local while receiving bbox/analytics metadata over
-WebSocket. The old server-rendered annotated video round-trip is not used.
+keeps its raw `<video>` local while receiving bbox/analytics metadata over the
+same lifecycle WebSocket used for signaling. The old server-rendered annotated
+video round-trip is not used.
 FastRTC is intentionally not added here: the current aiortc adapter already
 provides the required send-only media path, so a wrapper migration would not
-by itself improve inference latency. Public Modal WebRTC still needs a
-dedicated signaling/peer/TURN adapter.
+by itself improve inference latency. The Modal profile requires the persistent
+WebSocket route so the peer stays inside one Function Call. STUN is enabled;
+restrictive networks still need a managed TURN relay.
 
 To build the API as an independent container, provision the model assets first
 and build from the repository root. The image exposes port 8000 and does not
@@ -102,12 +104,16 @@ it does not upload the local dataset or development material.
 .\.venv\Scripts\python.exe tools\prepare_production_assets.py
 .\.venv\Scripts\python.exe -m pip install -r deploy\requirements-modal.txt
 .\.venv\Scripts\modal.exe setup
+.\.venv\Scripts\modal.exe secret create crowd-analytics-production FRONTEND_ORIGINS=https://your-dashboard.vercel.app
 .\.venv\Scripts\modal.exe deploy deploy\modal_app.py
 ```
 
 The Modal deployment is API-only: routes live under `/api/v1`; the React
 frontend is deployed independently. It is configured for one stateful live
 session, appropriate for the demo's GPU capacity.
+The complete deployment order, Vercel variables, quota-safe smoke test, and
+TURN boundary are documented in
+[docs/deploy-modal-vercel.md](docs/deploy-modal-vercel.md).
 
 ## React dashboard workspace
 
@@ -128,7 +134,8 @@ npm run dev
 The React dev server proxies same-origin `/api` requests to the FastAPI server.
 Open `http://127.0.0.1:3000/` in development. For Vercel/Netlify, set
 `VITE_API_BASE_URL` to the public FastAPI origin and use `frontend/` as the
-project root; the build output is `frontend/dist`.
+project root; the build output is `frontend/dist`. Vercel builds fail fast if
+that value is missing or is not a clean HTTPS origin.
 See [docs/frontend-migration.md](docs/frontend-migration.md) for deployment
 boundaries.
 The REST envelope and error contract are documented in

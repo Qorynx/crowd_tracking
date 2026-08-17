@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Live Monitor</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+          darkMode: "class",
+          theme: {
+            extend: {
+              "colors": {
+                      "sidebar-bg": "#0D1420",
+                      "background": "#071421",
+                      "secondary-fixed": "#d8e2ff",
+                      "surface-container-low": "#101c2a",
+                      "surface-container-high": "#1e2b39",
+                      "inverse-primary": "#00668a",
+                      "primary": "#8ed5ff",
+                      "surface-variant": "#293644",
+                      "on-tertiary-fixed-variant": "#653e00",
+                      "secondary-container": "#0566d9",
+                      "app-bg": "#0A0F18",
+                      "inverse-on-surface": "#253140",
+                      "primary-container": "#38bdf8",
+                      "tertiary": "#ffc176",
+                      "on-tertiary-container": "#613b00",
+                      "on-secondary": "#002e6a",
+                      "surface-bright": "#2e3a49",
+                      "surface": "#071421",
+                      "warning": "#F59E0B",
+                      "on-surface": "#d6e4f7",
+                      "surface-container-highest": "#293644",
+                      "on-error": "#690005",
+                      "on-tertiary-fixed": "#2a1700",
+                      "on-primary-fixed-variant": "#004c69",
+                      "on-tertiary": "#472a00",
+                      "surface-container-lowest": "#030f1c",
+                      "on-secondary-fixed": "#001a42",
+                      "on-surface-variant": "#bdc8d1",
+                      "border-strong": "#33445C",
+                      "tertiary-fixed-dim": "#ffb960",
+                      "outline-variant": "#3e484f",
+                      "text-primary": "#F1F5F9",
+                      "on-secondary-container": "#e6ecff",
+                      "primary-fixed": "#c4e7ff",
+                      "outline": "#87929a",
+                      "success": "#22C55E",
+                      "tertiary-container": "#f1a02b",
+                      "surface-tint": "#7bd0ff",
+                      "on-secondary-fixed-variant": "#004395",
+                      "surface-elevated": "#1A2637",
+                      "border-default": "#243247",
+                      "surface-container": "#14212e",
+                      "on-background": "#d6e4f7",
+                      "error-container": "#93000a",
+                      "surface-dim": "#071421",
+                      "on-primary": "#00354a",
+                      "primary-fixed-dim": "#7bd0ff",
+                      "on-primary-container": "#004965",
+                      "on-error-container": "#ffdad6",
+                      "surface-secondary": "#162131",
+                      "danger": "#EF4444",
+                      "tertiary-fixed": "#ffddb8",
+                      "inverse-surface": "#d6e4f7",
+                      "text-muted": "#718096",
+                      "on-primary-fixed": "#001e2c",
+                      "secondary": "#adc6ff",
+                      "secondary-fixed-dim": "#adc6ff",
+                      "surface-primary": "#111A28",
+                      "error": "#ffb4ab"
+              },
+              "borderRadius": {
+                      "DEFAULT": "0.25rem",
+                      "lg": "0.5rem",
+                      "xl": "0.75rem",
+                      "full": "9999px"
+              },
+              "spacing": {
+                      "unit": "4px",
+                      "margin-page": "16px",
+                      "card-padding": "16px",
+                      "gutter": "16px",
+                      "sidebar-width": "224px"
+              },
+              "fontFamily": {
+                      "label-md": [
+                              "Inter"
+                      ],
+                      "body-md": [
+                              "Inter"
+                      ],
+                      "headline-sm": [
+                              "Inter"
+                      ],
+                      "body-sm": [
+                              "Inter"
+                      ],
+                      "display-md": [
+                              "Inter"
+                      ],
+                      "technical-data": [
+                              "JetBrains Mono"
+                      ],
+                      "title-md": [
+                              "Inter"
+                      ],
+                      "display-lg": [
+                              "Inter"
+                      ]
+              },
+              "fontSize": {
+                      "label-md": [
+                              "12px",
+                              {
+                                      "lineHeight": "16px",
+                                      "letterSpacing": "0.02em",
+                                      "fontWeight": "500"
+                              }
+                      ],
+                      "body-md": [
+                              "14px",
+                              {
+                                      "lineHeight": "20px",
+                                      "fontWeight": "400"
+                              }
+                      ],
+                      "headline-sm": [
+                              "20px",
+                              {
+                                      "lineHeight": "28px",
+                                      "fontWeight": "600"
+                              }
+                      ],
+                      "body-sm": [
+                              "13px",
+                              {
+                                      "lineHeight": "18px",
+                                      "fontWeight": "400"
+                              }
+                      ],
+                      "display-md": [
+                              "28px",
+                              {
+                                      "lineHeight": "36px",
+                                      "letterSpacing": "-0.01em",
+                                      "fontWeight": "600"
+                              }
+                      ],
+                      "technical-data": [
+                              "12px",
+                              {
+                                      "lineHeight": "16px",
+                                      "fontWeight": "400"
+                              }
+                      ],
+                      "title-md": [
+                              "16px",
+                              {
+                                      "lineHeight": "24px",
+                                      "fontWeight": "600"
+                              }
+                      ],
+                      "display-lg": [
+                              "36px",
+                              {
+                                      "lineHeight": "44px",
+                                      "letterSpacing": "-0.02em",
+                                      "fontWeight": "600"
+                              }
+                      ]
+              }
+      },
+          },
+        }
+      </script>
+<style>
+        .custom-overlay {
+            border: 1.5px solid theme('colors.primary');
+            background: transparent;
+        }
+      </style>
+<style>
+    body {
+      min-height: max(884px, 100dvh);
+    }
+  </style>
+</head>
+<body class="bg-background text-text-primary font-body-md min-h-screen flex flex-col">
+<!-- Top Navigation (Mobile Friendly) -->
+<header class="bg-surface border-b border-border-default flex justify-between items-center w-full px-margin-page h-16 sticky top-0 z-50">
+<div class="flex items-center gap-4">
+<span class="font-display-md text-display-md font-bold text-primary truncate max-w-[200px]">Classroom A</span>
+</div>
+<div class="flex items-center gap-4">
+<button class="text-primary font-label-md text-label-md uppercase tracking-wider hover:text-primary-container transition-colors">
+                Live Status
+            </button>
+<span class="material-symbols-outlined text-text-muted hover:text-text-primary transition-colors cursor-pointer" data-icon="notifications">notifications</span>
+</div>
+</header>
+<!-- Main Content Canvas -->
+<main class="flex-grow flex flex-col pb-[80px]"> <!-- Padding for Bottom Nav -->
+<!-- Video Feed Section (Anchor) -->
+<section class="w-full h-[353px] bg-surface-container relative group">
+<img class="w-full h-full object-cover opacity-80 mix-blend-luminosity" data-alt="A wide-angle security camera view of a modern classroom or lecture hall, viewed from a high vantage point. Desks are arranged in rows. Minimalist, architectural styling, slightly desaturated tones. The scene is well-lit with artificial overhead lighting. The mood is calm and observational. Focus on clarity and sharp details suitable for a high-end monitor feed." src="https://lh3.googleusercontent.com/aida-public/AB6AXuClOPWy49AnDcKP9W0VL12o5Q_rT1K_Mb15fBQ2ksxo2bfZ-t_AzKR5Sr_AxslkDHsIS0-b4kcAjX4Ii6Gcq0nO59nTOd-bgZQfFBQrleaR-cZUYNdfryHNzHRpMgDmt43Zldr9K8_I1h3TRzOVgD2SJHIjnV45yIx5Uz0dYNFGSoEEKULDTIWZhFDnFuYyeXCwHh3WXxGqL8Xtpb2_aLyu2NeNVzmdY3ecaxbe-2p3x7VCBK4pcynkPA"/>
+<!-- Video Overlays (Simulated) -->
+<div class="absolute inset-0 pointer-events-none">
+<!-- Person Box -->
+<div class="absolute top-[30%] left-[45%] w-[40px] h-[80px] custom-overlay">
+<span class="absolute -top-[18px] -left-[1.5px] bg-primary text-app-bg font-label-md text-label-md px-1">P01</span>
+</div>
+<!-- Person Box 2-->
+<div class="absolute top-[45%] left-[60%] w-[35px] h-[70px] custom-overlay">
+<span class="absolute -top-[18px] -left-[1.5px] bg-primary text-app-bg font-label-md text-label-md px-1">P02</span>
+</div>
+</div>
+<!-- Video Controls -->
+<div class="absolute bottom-0 left-0 w-full p-4 flex justify-between items-end bg-gradient-to-t from-background/90 to-transparent">
+<div class="flex gap-2">
+<div class="bg-danger/15 border border-danger rounded-full px-3 py-1 flex items-center gap-1.5 backdrop-blur-sm">
+<span class="w-2 h-2 rounded-full bg-danger animate-pulse"></span>
+<span class="font-label-md text-label-md text-danger uppercase">Live</span>
+</div>
+</div>
+<div class="flex gap-3">
+<button class="bg-surface-primary/80 border border-border-default rounded p-2 text-text-primary hover:bg-surface-elevated transition-colors backdrop-blur-md flex items-center gap-1">
+<span class="material-symbols-outlined text-sm" data-icon="layers">layers</span>
+<span class="font-label-md text-label-md">Overlays</span>
+</button>
+<button class="bg-surface-primary/80 border border-border-default rounded p-2 text-text-primary hover:bg-surface-elevated transition-colors backdrop-blur-md flex items-center gap-1">
+<span class="material-symbols-outlined text-sm" data-icon="fullscreen">fullscreen</span>
+<span class="font-label-md text-label-md">Fullscreen</span>
+</button>
+</div>
+</div>
+</section>
+<!-- Real-time Metrics Section -->
+<section class="px-margin-page py-gutter flex flex-col gap-4">
+<div class="flex justify-between items-center border-b border-border-default pb-3">
+<span class="font-body-md text-text-muted">People</span>
+<span class="font-headline-sm text-text-primary">26</span>
+</div>
+<div class="flex justify-between items-center border-b border-border-default pb-3">
+<span class="font-body-md text-text-muted">IN / OUT</span>
+<span class="font-body-md text-text-primary">31 / 5</span>
+</div>
+<div class="flex justify-between items-center border-b border-border-default pb-3">
+<span class="font-body-md text-text-muted">Density</span>
+<span class="font-body-md text-text-primary">0.41 /m²</span>
+</div>
+<div class="flex justify-between items-center">
+<span class="font-body-md text-text-muted">Seats</span>
+<span class="font-body-md text-text-primary">24 / 32</span>
+</div>
+</section>
+</main>
+<!-- Bottom Navigation Bar (Mobile Only) -->
+<nav class="fixed bottom-0 left-0 w-full bg-sidebar-bg border-t border-border-default flex justify-around items-center h-[72px] pb-2 z-50">
+<div class="flex flex-col items-center justify-center gap-1 cursor-pointer text-text-muted hover:text-text-primary transition-colors flex-1 h-full pt-2">
+<span class="material-symbols-outlined text-xl" data-icon="dashboard">dashboard</span>
+<span class="font-label-md text-label-md text-[10px]">Overview</span>
+</div>
+<div class="flex flex-col items-center justify-center gap-1 cursor-pointer text-primary font-bold flex-1 h-full pt-2 relative">
+<!-- Active Indicator -->
+<div class="absolute top-0 w-8 h-[2px] bg-primary rounded-b-full"></div>
+<span class="material-symbols-outlined text-xl" data-icon="videocam" style="font-variation-settings: 'FILL' 1;">videocam</span>
+<span class="font-label-md text-label-md text-[10px]">Live Monitor</span>
+</div>
+<div class="flex flex-col items-center justify-center gap-1 cursor-pointer text-text-muted hover:text-text-primary transition-colors flex-1 h-full pt-2">
+<span class="material-symbols-outlined text-xl" data-icon="leaderboard">leaderboard</span>
+<span class="font-label-md text-label-md text-[10px]">Analytics</span>
+</div>
+<div class="flex flex-col items-center justify-center gap-1 cursor-pointer text-text-muted hover:text-text-primary transition-colors flex-1 h-full pt-2">
+<span class="material-symbols-outlined text-xl" data-icon="settings">settings</span>
+<span class="font-label-md text-label-md text-[10px]">System</span>
+</div>
+</nav>
+</body></html>

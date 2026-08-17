@@ -33,8 +33,10 @@ Session endpoints return:
 
 `GET /api/v1/sessions/{id}/stats` returns one complete snapshot with
 `status`, `session`, optional `frame`, optional `analytics`, and
-`live_stream` telemetry. The same JSON envelope is pushed by
-`WebSocket /api/v1/sessions/{id}/metadata` whenever `frame.sequence` advances.
+`live_stream` telemetry. The same JSON envelope is pushed by the live WebRTC
+lifecycle socket (inside a `{event: "metadata", data: ...}` message) or the
+compatibility `WebSocket /api/v1/sessions/{id}/metadata` whenever
+`frame.sequence` advances.
 
 `POST /api/v1/sessions/{id}/frame` returns:
 
@@ -61,13 +63,16 @@ The overlay may also contain compact `zones` and `seats` polygons, plus
 per-track `motion` and `trajectory` metadata. Coordinates are always in the
 `processed_frame` coordinate space described by `frame_size`.
 
-For deployments with the optional `aiortc` runtime, the browser uses
-`POST /api/v1/webrtc/offer` with a complete non-trickle SDP offer. The response
-contains `session_id`, an SDP answer, and `ice_mode: "non_trickle"`. The media
-direction is send-only: the server ingests camera frames but never sends a
-server-rendered annotated video track back. The React live monitor keeps the
-camera local, draws the metadata WebSocket payload on Canvas, and falls back
-to the existing HTTP frame path only when WebRTC signaling/media is unavailable.
+For deployments with the optional `aiortc` runtime, the React client sends a
+complete non-trickle SDP offer over `WebSocket /api/v1/webrtc/connect`. An
+`answer` event contains `session_id`, SDP answer, and
+`ice_mode: "non_trickle"`; later `metadata` events contain analytics. The
+socket remains open for the peer lifetime. The media direction is send-only:
+the server ingests camera frames but never sends a server-rendered annotated
+video track back. The live monitor keeps the camera local, draws metadata on
+Canvas, and falls back to HTTP frames only when initial WebRTC
+signaling/media is unavailable. `POST /webrtc/offer` remains a self-hosted
+compatibility endpoint and is disabled by the Modal profile.
 
 ## Session classroom configuration
 
@@ -103,8 +108,8 @@ into fake/demo data.
 
 - Use `frontend/src/api/crowdApi.ts`; do not call `fetch` directly from pages.
 - Use same-origin `/api` in development through the Vite proxy.
-- For live analytics, open the session metadata WebSocket; do not poll
-  `/stats` every frame.
+- For React live analytics, keep the WebRTC lifecycle WebSocket open; do not
+  poll `/stats` every frame.
 - Close a session with `DELETE /api/v1/sessions/{id}` when the owning flow is
   stopped. The React `LivePage` owns this lifecycle and performs best-effort
   cleanup even when camera startup or a frame request fails.

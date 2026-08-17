@@ -18,9 +18,13 @@ FastAPI :8000 (API only)
         ├── /api/v1/sessions/...
         │   ├── /layout
         │   └── /calibration
-        ├── /api/v1/webrtc/offer
-        ├── /api/v1/sessions/{id}/metadata (WebSocket)
-        └── /api/v1/video/analyze
+        ├── /api/v1/webrtc/connect (lifecycle WebSocket)
+        ├── /api/v1/webrtc/offer (self-hosted compatibility)
+        ├── /api/v1/sessions/{id}/metadata (compatibility WebSocket)
+        └── /api/v1/video
+            ├── /analyze (submit job)
+            ├── /jobs/{id} (status/result)
+            └── /artifacts/{id} (annotated MP4)
 ```
 
 The React dev server now uses same-origin `/api` requests. The proxy target is
@@ -42,7 +46,9 @@ intentional cross-origin deployment.
 The backend has no `/`, `/app`, `/static`, or `/assets` frontend surface.
 Deploy the frontend from the `frontend/` root and configure
 `VITE_API_BASE_URL`; deploy the backend from the repository root with the
-existing FastAPI/Docker/Modal setup and configure `FRONTEND_ORIGINS`.
+existing FastAPI/Docker/Modal setup and configure exact `FRONTEND_ORIGINS`.
+The ordered production checklist is in
+[deploy-modal-vercel.md](deploy-modal-vercel.md).
 
 Stage 1 adds the first contract layer without switching the deployed client:
 see [docs/api-contract.md](api-contract.md).
@@ -53,9 +59,10 @@ stop the loop. The dashboard also maps backend live-stream telemetry and
 analytics into view models without demo fallbacks.
 
 Stage 3 adds a metadata canvas overlay for tracks, motion, zones, and seats;
-uses WebRTC as a send-only camera ingest path, pushes result envelopes over a
-session WebSocket, and keeps the raw camera local. The older HTTP-frame path is
-retained only as a bounded fallback when WebRTC negotiation/runtime is unavailable.
+uses WebRTC as a send-only camera ingest path, pushes result envelopes over the
+same lifecycle WebSocket used for signaling, and keeps the raw camera local.
+The older HTTP-frame path is retained only as a bounded fallback when initial
+WebRTC negotiation/runtime is unavailable.
 
 Stage 4 removes dashboard-only demo values. Analytics now renders the
 backend's dynamic zone list and bounded heatmap grid, preserves explicit

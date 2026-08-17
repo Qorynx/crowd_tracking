@@ -536,7 +536,8 @@ class CrowdGenderPipeline:
                 {
                     "track_id": int(track_id),
                     "person_id": int(person_id) if person_id is not None else None,
-                    "label": f"{person_label} | T{track_id} | {source}: {gender}",
+                    "person_label": person_label,
+                    "label": f"{person_label} | {source}: {gender}",
                     "bbox": [int(value) for value in bbox],
                     "gender": str(gender),
                     "source": str(source),
@@ -718,7 +719,7 @@ class CrowdGenderPipeline:
             color = {"female": (203, 192, 255), "male": (255, 128, 0), "unknown": (128, 128, 128)}[gender]
             cv2.rectangle(output, (x1, y1), (x2, y2), color, 2)
             person_label = self.stream_state.person_identity.display_label(person_ids.get(track_id))
-            label = f"{person_label} | T{track_id} | {source}: {gender}" + (
+            label = f"{person_label} | {source}: {gender}" + (
                 f" {confidence:.2f}" if gender != "unknown" else ""
             )
             cv2.putText(output, label, (x1, max(18, y1 - 7)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)

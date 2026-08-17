@@ -8,7 +8,8 @@ import type {
   SessionConfigurationResponse,
   SessionLayoutRequest,
   SessionStatsResponse,
-  VideoAnalysisResponse,
+  VideoAnalysisJobAccepted,
+  VideoAnalysisJobStatus,
   WebRTCOfferResponse,
   WarmupStatusResponse,
 } from './contracts';
@@ -25,6 +26,9 @@ const getBaseUrl = () => {
 
 const API_BASE = `${getBaseUrl()}/api/v1`;
 const DEFAULT_TIMEOUT_MS = 15_000;
+// Only the upload is part of the submit request. Inference and encoding run in
+// one backend job and are observed through short status requests.
+const VIDEO_UPLOAD_TIMEOUT_MS = 60_000;
 
 export class CrowdApiError extends Error {
   readonly status: number;
@@ -44,6 +48,13 @@ export function getApiErrorMessage(error: unknown, fallback: string): string {
   if (error instanceof CrowdApiError) return error.message;
   if (error instanceof Error && error.message) return error.message;
   return fallback;
+}
+
+/** Resolve a relative API artifact URL through the configured API origin. */
+export function resolveApiResourceUrl(path: string): string {
+  if (/^https?:\/\//i.test(path)) return path;
+  const base = getBaseUrl() || (typeof window !== 'undefined' ? window.location.origin : '');
+  return new URL(path, `${base.replace(/\/$/, '')}/`).toString();
 }
 
 async function parseResponseBody(response: Response): Promise<unknown> {
@@ -224,13 +235,41 @@ export function createSessionMetadataSocket(sessionId: string): WebSocket {
   return new WebSocket(url.toString());
 }
 
-export function analyzeVideo(file: File, mode = 'default', signal?: AbortSignal): Promise<VideoAnalysisResponse> {
+/**
+ * Open the lifecycle-bound WebRTC signaling channel used by serverless
+ * deployments. The same socket returns the SDP answer and pushes metadata,
+ * keeping the backend Function Call alive for the full peer lifetime.
+ */
+export function createWebRTCSessionSocket(): WebSocket {
+  if (typeof window === 'undefined' || typeof WebSocket === 'undefined') {
+    throw new Error('WebSocket signaling is unavailable in this browser.');
+  }
+  const base = (getBaseUrl() || window.location.origin).replace(/\/api\/v1\/?$/, '');
+  const url = new URL(`${base}/api/v1/webrtc/connect`, window.location.href);
+  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+  return new WebSocket(url.toString());
+}
+
+export function startVideoAnalysis(
+  file: File,
+  mode = 'default',
+  jobId?: string,
+  signal?: AbortSignal,
+): Promise<VideoAnalysisJobAccepted> {
   const formData = new FormData();
   formData.append('file', file);
   formData.append('mode', mode);
-  return requestJson<VideoAnalysisResponse>('/video/analyze', {
+  if (jobId) formData.append('job_id', jobId);
+  return requestJson<VideoAnalysisJobAccepted>('/video/analyze', {
     method: 'POST',
     body: formData,
     signal,
-  });
+  }, VIDEO_UPLOAD_TIMEOUT_MS);
+}
+
+export function getVideoAnalysisJob(
+  jobId: string,
+  signal?: AbortSignal,
+): Promise<VideoAnalysisJobStatus> {
+  return requestJson<VideoAnalysisJobStatus>(`/video/jobs/${encodeURIComponent(jobId)}`, { signal }, 10_000);
 }

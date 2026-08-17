@@ -1,119 +1,160 @@
 import React from 'react';
-import { Cpu, Zap, HardDrive, Clock } from 'lucide-react';
-import type { LiveStreamTelemetry } from '../types/analytics';
+import { Cpu, Radio, Gauge, Layers, CheckCircle2 } from 'lucide-react';
+import type { LiveStreamTelemetry } from '@/types/analytics';
+import type { ApiAvailability } from '@/api/contracts';
+import { Badge } from '@/components/ui/badge';
 
 interface SystemPageProps {
   telemetry: LiveStreamTelemetry;
   t: any;
   isLive?: boolean;
+  apiStatus: ApiAvailability;
 }
 
-export const SystemPage: React.FC<SystemPageProps> = ({ telemetry, t, isLive = false }) => {
+export const SystemPage: React.FC<SystemPageProps> = ({ telemetry, t, isLive = false, apiStatus }) => {
+  const statusLabel = apiStatus === 'offline'
+    ? t.serviceOffline
+    : apiStatus === 'not_ready'
+      ? t.serviceNotReady
+      : apiStatus === 'checking'
+        ? t.serviceChecking
+        : isLive
+          ? t.monitoringActive
+          : t.systemReady;
+  const statusVariant = apiStatus === 'offline'
+    ? 'destructive'
+    : apiStatus === 'not_ready' || apiStatus === 'checking'
+      ? 'warning'
+      : 'success';
+
   return (
-    <div className="p-6 space-y-6 max-w-7xl mx-auto">
-      {/* Header */}
-      <div className="flex flex-wrap items-center justify-between gap-4">
+    <div className="p-6 sm:p-10 max-w-4xl mx-auto space-y-12">
+      {/* Page Header */}
+      <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4 border-b border-border-default pb-6">
         <div>
-          <h2 className="text-xl font-bold font-mono text-slate-100 flex items-center gap-2">
-            {t.systemTitle}
-          </h2>
-          <p className="text-xs text-sky-300/80 font-mono">{t.systemSub}</p>
+          <h1 className="text-3xl sm:text-4xl font-semibold text-text-primary tracking-tight">
+            {t.systemDiagnostics}
+          </h1>
+          <p className="text-sm text-text-muted mt-1">{t.realtimeTelemetry}</p>
         </div>
+
+        {/* Status Pill */}
+          <Badge variant={statusVariant} className="px-3.5 py-1.5 self-start sm:self-auto">
+            <CheckCircle2 className="w-4 h-4" />
+            <span>{statusLabel}</span>
+        </Badge>
       </div>
 
-      {/* Grid Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 font-mono">
-        {/* Card 1: Pipeline */}
-        <div className="cyber-card p-5 space-y-4">
-          <h3 className="text-xs font-bold text-sky-400 uppercase tracking-wider flex items-center gap-2">
-            <Cpu className="w-4 h-4 text-cyan-400" />
-            {t.pipelineTitle}
-          </h3>
-
-          <div className="space-y-2 text-xs">
-            <div className="flex justify-between border-b border-sky-500/30 pb-1.5">
-              <span className="text-sky-300">{t.detectorLabel}</span>
-              <span className="text-cyan-400 font-bold">{isLive ? telemetry.detector_model || '--' : '--'}</span>
-            </div>
-            <div className="flex justify-between border-b border-sky-500/30 pb-1.5">
-              <span className="text-sky-300">{t.trackerLabel}</span>
-              <span className="text-slate-100 font-bold">{isLive ? telemetry.tracker_type || '--' : '--'}</span>
-            </div>
-          </div>
-        </div>
-
-        {/* Card 2: Distinct 3 FPS Metrics */}
-        <div className="cyber-card p-5 space-y-4">
-          <h3 className="text-xs font-bold text-sky-400 uppercase tracking-wider flex items-center gap-2">
-            <Zap className="w-4 h-4 text-cyan-400" />
-            {t.fps3TierTitle}
-          </h3>
-
-          <div className="space-y-2 text-xs">
-            <div className="flex justify-between border-b border-sky-500/30 pb-1.5">
-              <span className="text-sky-300">{t.cameraFpsLabel}</span>
-              <span className="text-slate-100 font-bold">{isLive && telemetry.camera_fps != null ? `${telemetry.camera_fps} FPS` : '--'}</span>
-            </div>
-            <div className="flex justify-between border-b border-sky-500/30 pb-1.5">
-              <span className="text-sky-300">{t.aiHzLabel}</span>
-              <span className="text-cyan-400 font-bold">
-                {isLive && telemetry.ai_update_rate_hz != null ? `${telemetry.ai_update_rate_hz.toFixed(1)} Hz` : '--'}
+      {/* Diagnostics Category Rows */}
+      <div className="space-y-12">
+        {/* Category: System Status */}
+        <section>
+          <h2 className="text-base font-semibold text-text-primary mb-3 flex items-center gap-2">
+            <Cpu className="w-4 h-4 text-text-muted" />
+            <span>{t.systemStatus}</span>
+          </h2>
+          <div className="border-t border-border-default divide-y divide-border-default text-xs">
+            <div className="flex justify-between items-center py-3.5 px-2 hover:bg-surface-secondary/40 transition-colors">
+              <span className="text-text-muted">{t.coreService}</span>
+              <span className="font-mono font-semibold text-success flex items-center gap-2">
+                {apiStatus === 'ready' ? t.online : statusLabel}
+                <span className={`w-1.5 h-1.5 rounded-full ${apiStatus === 'ready' ? 'bg-success animate-pulse' : 'bg-warning'}`} />
               </span>
             </div>
-            <div className="flex justify-between">
-              <span className="text-sky-300">{t.modelFpsLabel}</span>
-              <span className="text-slate-100 font-bold">
-                {isLive && telemetry.processing_fps != null ? `${telemetry.processing_fps.toFixed(1)} FPS` : '--'}
+            <div className="flex justify-between items-center py-3.5 px-2 hover:bg-surface-secondary/40 transition-colors">
+              <span className="text-text-muted">{t.uptime}</span>
+              <span className="font-mono text-text-primary">
+                {apiStatus === 'offline' || apiStatus === 'not_ready'
+                  ? statusLabel
+                  : isLive
+                    ? 'Active Session'
+                    : 'Ready'}
               </span>
             </div>
           </div>
-        </div>
+        </section>
 
-        {/* Card 3: Latencies */}
-        <div className="cyber-card p-5 space-y-4">
-          <h3 className="text-xs font-bold text-sky-400 uppercase tracking-wider flex items-center gap-2">
-            <Clock className="w-4 h-4 text-cyan-400" />
-            {t.latenciesTitle}
-          </h3>
-
-          <div className="space-y-2 text-xs">
-            <div className="flex justify-between border-b border-sky-500/30 pb-1.5">
-              <span className="text-sky-300">{t.latencyP50}</span>
-              <span className="text-slate-100">{isLive && telemetry.latency_p50_ms != null ? `${telemetry.latency_p50_ms.toFixed(1)} ms` : '--'}</span>
+        {/* Category: Connection */}
+        <section>
+          <h2 className="text-base font-semibold text-text-primary mb-3 flex items-center gap-2">
+            <Radio className="w-4 h-4 text-text-muted" />
+            <span>{t.connection}</span>
+          </h2>
+          <div className="border-t border-border-default divide-y divide-border-default text-xs font-mono">
+            <div className="flex justify-between items-center py-3.5 px-2 hover:bg-surface-secondary/40 transition-colors">
+              <span className="text-text-muted font-sans">{t.latencyP50}</span>
+              <span className="text-text-primary">
+                {isLive && telemetry.latency_p50_ms != null ? `${telemetry.latency_p50_ms} ms` : '—'}
+              </span>
             </div>
-            <div className="flex justify-between">
-              <span className="text-sky-300">{t.latencyP95}</span>
-              <span className="text-cyan-400 font-bold">{isLive && telemetry.latency_p95_ms != null ? `${telemetry.latency_p95_ms.toFixed(1)} ms` : '--'}</span>
+            <div className="flex justify-between items-center py-3.5 px-2 hover:bg-surface-secondary/40 transition-colors">
+              <span className="text-text-muted font-sans">{t.latencyP95}</span>
+              <span className="text-warning font-semibold">
+                {isLive && telemetry.latency_p95_ms != null ? `${telemetry.latency_p95_ms} ms` : '—'}
+              </span>
             </div>
           </div>
-        </div>
+        </section>
 
-        {/* Card 4: Queue State */}
-        <div className="cyber-card p-5 space-y-4">
-          <h3 className="text-xs font-bold text-sky-400 uppercase tracking-wider flex items-center gap-2">
-            <HardDrive className="w-4 h-4 text-cyan-400" />
-            {t.bufferQueueTitle}
-          </h3>
-
-          <div className="space-y-2 text-xs">
-            <div className="flex justify-between border-b border-sky-500/30 pb-1.5">
-              <span className="text-sky-300">{t.receivedFrames}</span>
-              <span className="text-slate-100">{telemetry.received_frames ?? '--'}</span>
+        {/* Category: Processing */}
+        <section>
+          <h2 className="text-base font-semibold text-text-primary mb-3 flex items-center gap-2">
+            <Gauge className="w-4 h-4 text-text-muted" />
+            <span>{t.processing}</span>
+          </h2>
+          <div className="border-t border-border-default divide-y divide-border-default text-xs font-mono">
+            <div className="flex justify-between items-center py-3.5 px-2 hover:bg-surface-secondary/40 transition-colors">
+              <span className="text-text-muted font-sans">{t.processingRate}</span>
+              <span className="text-text-primary font-semibold">
+                {isLive && telemetry.processing_fps != null
+                  ? `${telemetry.processing_fps.toFixed(1)} FPS`
+                  : '—'}
+              </span>
             </div>
-            <div className="flex justify-between border-b border-sky-500/30 pb-1.5">
-              <span className="text-sky-300">{t.processedFrames}</span>
-              <span className="text-slate-100">{telemetry.processed_frames ?? '--'}</span>
-            </div>
-            <div className="flex justify-between border-b border-sky-500/30 pb-1.5">
-              <span className="text-sky-300">{t.replacedFrames}</span>
-              <span className="text-slate-400">{telemetry.replaced_frames ?? '--'}</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-sky-300">{t.pendingFrames}</span>
-              <span className="text-emerald-400 font-bold">{telemetry.pending_frames ?? '--'}</span>
+            <div className="flex justify-between items-center py-3.5 px-2 hover:bg-surface-secondary/40 transition-colors">
+              <span className="text-text-muted font-sans">{t.updateRate}</span>
+              <span className="text-text-primary font-semibold">
+                {isLive && telemetry.ai_update_rate_hz != null
+                  ? `${telemetry.ai_update_rate_hz.toFixed(1)} Hz`
+                  : '—'}
+              </span>
             </div>
           </div>
-        </div>
+        </section>
+
+        {/* Category: Pipeline */}
+        <section>
+          <h2 className="text-base font-semibold text-text-primary mb-3 flex items-center gap-2">
+            <Layers className="w-4 h-4 text-text-muted" />
+            <span>{t.pipeline}</span>
+          </h2>
+          <div className="border-t border-border-default divide-y divide-border-default text-xs font-mono">
+            <div className="flex justify-between items-center py-3.5 px-2 hover:bg-surface-secondary/40 transition-colors">
+              <span className="text-text-muted font-sans">{t.cameraInput}</span>
+              <span className="text-text-primary">
+                {isLive && telemetry.camera_fps != null ? `${telemetry.camera_fps} FPS` : '—'}
+              </span>
+            </div>
+            <div className="flex justify-between items-center py-3.5 px-2 hover:bg-surface-secondary/40 transition-colors">
+              <span className="text-text-muted font-sans">{t.detectorModel}</span>
+              <span className="text-primary font-semibold">
+                {telemetry.detector_model || '—'}
+              </span>
+            </div>
+            <div className="flex justify-between items-center py-3.5 px-2 hover:bg-surface-secondary/40 transition-colors">
+              <span className="text-text-muted font-sans">{t.trackerEngine}</span>
+              <span className="text-primary font-semibold">
+                {telemetry.tracker_type || '—'}
+              </span>
+            </div>
+            <div className="flex justify-between items-center py-3.5 px-2 hover:bg-surface-secondary/40 transition-colors">
+              <span className="text-text-muted font-sans">{t.pendingFrames}</span>
+              <span className="text-text-primary font-semibold">
+                {isLive && telemetry.pending_frames != null ? telemetry.pending_frames : '—'}
+              </span>
+            </div>
+          </div>
+        </section>
       </div>
     </div>
   );

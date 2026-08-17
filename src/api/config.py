@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 
 _PRODUCTION_ASSET_MANIFEST = Path("models") / "production-assets.json"
@@ -48,15 +49,50 @@ def _nonnegative_float_from_environment(name: str, default: float) -> float:
     return value
 
 
+def _bool_from_environment(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"{name} must be one of: true, false, 1, 0, yes, no, on, off.")
+
+
+def _normalize_frontend_origin(origin: str) -> str:
+    normalized = origin.strip().rstrip("/")
+    if "*" in normalized:
+        raise ValueError("FRONTEND_ORIGINS cannot contain wildcards; configure explicit frontend origins.")
+    parsed = urlsplit(normalized)
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.netloc
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError(
+            "FRONTEND_ORIGINS entries must be HTTP(S) origins only, for example "
+            "https://dashboard.example.com."
+        )
+    return f"{parsed.scheme.lower()}://{parsed.netloc.lower()}"
+
+
 def _frontend_origins_from_environment() -> tuple[str, ...]:
     """Return explicit browser origins without ever enabling wildcard CORS."""
 
-    defaults = ["http://localhost:3000", "http://127.0.0.1:3000"]
+    defaults = (
+        ["http://localhost:3000", "http://127.0.0.1:3000"]
+        if _bool_from_environment("FRONTEND_INCLUDE_LOCAL_ORIGINS", True)
+        else []
+    )
     configured = os.getenv("FRONTEND_ORIGINS", os.getenv("FRONTEND_ORIGIN", ""))
-    origins = [origin.strip().rstrip("/") for origin in configured.split(",") if origin.strip()]
+    origins = [_normalize_frontend_origin(origin) for origin in configured.split(",") if origin.strip()]
     combined = list(dict.fromkeys([*defaults, *origins]))
-    if "*" in combined:
-        raise ValueError("FRONTEND_ORIGINS cannot contain '*'; configure explicit frontend origins.")
     return tuple(combined)
 
 
@@ -173,6 +209,8 @@ class ApiSettings:
     max_video_bytes: int = 64 * 1024 * 1024
     max_video_seconds: float = 60.0
     max_video_frames: int = 1_800
+    warm_on_start: bool = True
+    require_webrtc_lifecycle_socket: bool = False
 
     @classmethod
     def from_environment(cls) -> "ApiSettings":
@@ -200,6 +238,11 @@ class ApiSettings:
                 _nonnegative_float_from_environment("API_MAX_VIDEO_SECONDS", 60.0),
             ),
             max_video_frames=_positive_int_from_environment("API_MAX_VIDEO_FRAMES", 1_800),
+            warm_on_start=_bool_from_environment("API_WARM_ON_START", True),
+            require_webrtc_lifecycle_socket=_bool_from_environment(
+                "WEBRTC_REQUIRE_LIFECYCLE_SOCKET",
+                False,
+            ),
         )
 
     @property
@@ -230,7 +273,7 @@ class ApiSettings:
             }
         return {
             "ready": modes["default"]["ready"],
-            "model_initialization": "background_warmup",
+            "model_initialization": "background_warmup" if self.warm_on_start else "on_demand",
             "modes": modes,
             "production_asset_manifest": str(self.project_root / _PRODUCTION_ASSET_MANIFEST),
             "missing_model_assets": missing_assets,

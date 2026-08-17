@@ -7,23 +7,25 @@ upload/frame-demo path.  In such an environment the offer endpoint returns a
 clear 503 rather than pretending that a peer connection was established.
 
 The browser uses *non-trickle ICE* for this small demo: it waits until its
-offer has finished ICE gathering, then posts the complete offer here.  This
-keeps the public API to one signalling endpoint.  The media direction is
-deliberately **send-only**: aiortc consumes the browser camera track and feeds
-the latest frame into ``LiveFrameProcessor``.  It does not render or send an
-annotated video track back to the browser.  The frontend keeps the camera's
-local ``<video>`` smooth and receives compact analytics/overlay metadata over
-the companion WebSocket endpoint.
+offer has finished ICE gathering, then sends the complete offer through the
+``/webrtc/connect`` lifecycle WebSocket. The media direction is deliberately
+**send-only**: aiortc consumes the browser camera track and feeds the latest
+frame into ``LiveFrameProcessor``. It does not render or send an annotated
+video track back to the browser. The same persistent socket pushes compact
+analytics/overlay metadata and keeps a serverless Function Call alive for the
+full aiortc peer lifetime. A POST offer endpoint remains for normal
+self-hosted ASGI deployments.
 
 aiortc peers use a default public STUN server (overridable with
-``WEBRTC_STUN_SERVERS``) for candidate discovery.  TURN and a Modal-specific
-peer/TURN adapter remain intentionally out of scope for this one-camera demo;
-restrictive NATs may therefore still need a later production transport layer.
+``WEBRTC_STUN_SERVERS``) for candidate discovery. TURN credentials remain
+intentionally out of scope for this one-camera demo;
+restrictive NATs may therefore still need a managed relay.
 """
 
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 import inspect
 import logging
 import os
@@ -32,8 +34,8 @@ from time import monotonic
 from typing import Any, Callable, Literal, Protocol
 
 import numpy as np
-from fastapi import APIRouter, HTTPException, status
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect, status
+from pydantic import BaseModel, Field, ValidationError
 
 
 LOGGER = logging.getLogger(__name__)
@@ -341,10 +343,14 @@ def create_webrtc_router(
     prefix: str = "/api/v1",
     registry: WebRTCPeerRegistry | None = None,
     backend_loader: Callable[[], AiortcBackend] = load_aiortc_backend,
+    metadata_payload_factory: Callable[[str], dict[str, Any]] | None = None,
+    allowed_websocket_origins: tuple[str, ...] = (),
+    allow_detached_offer: bool = True,
+    session_start_guard: Callable[[], None] | None = None,
     session_ttl_seconds: int | None = 600,
     stun_servers: tuple[str, ...] | None = None,
 ) -> APIRouter:
-    """Create the minimal non-trickle WebRTC offer endpoint.
+    """Create non-trickle WebRTC signaling endpoints.
 
     The caller should retain the supplied/returned registry (normally in
     ``app.state.webrtc_peers``).  A REST session-delete handler can then call
@@ -352,7 +358,10 @@ def create_webrtc_router(
     ``session_manager.close(session_id)``.  Connection failures call
     ``registry.close_session`` automatically.  Real aiortc peers use the
     default STUN server unless ``stun_servers`` is explicitly supplied or the
-    ``WEBRTC_STUN_SERVERS`` environment variable overrides it.
+    ``WEBRTC_STUN_SERVERS`` environment variable overrides it. The WebSocket
+    route keeps signaling, aiortc ingestion, and metadata inside one ASGI call;
+    this is the production path for serverless WebSocket runtimes such as
+    Modal. The HTTP offer remains available for conventional self-hosting.
     """
 
     if session_ttl_seconds is not None and session_ttl_seconds < 0:
@@ -365,12 +374,9 @@ def create_webrtc_router(
     peer_registry = registry or WebRTCPeerRegistry(session_manager)
     router = APIRouter(prefix=prefix, tags=["webrtc"])
 
-    @router.post(
-        "/webrtc/offer",
-        response_model=WebRTCOfferResponse,
-        status_code=status.HTTP_201_CREATED,
-    )
-    async def create_webrtc_offer(offer: WebRTCOfferRequest) -> WebRTCOfferResponse:
+    async def accept_offer(offer: WebRTCOfferRequest) -> tuple[WebRTCOfferResponse, Any]:
+        """Create one tracker-owned peer and return its SDP answer."""
+
         # Do this before creating a session, avoiding a model/session leak when
         # the optional WebRTC media runtime was omitted from the deployment.
         try:
@@ -388,6 +394,8 @@ def create_webrtc_router(
                 detail={"code": "invalid_sdp", "message": "SDP offer must not be blank."},
             )
 
+        if session_start_guard is not None:
+            session_start_guard()
         entry = session_manager.create_session(mode=offer.mode, camera_id=offer.camera_id)
         session_id = _session_id_from(entry)
         response_mode = str(getattr(entry, "mode", offer.mode))
@@ -397,8 +405,6 @@ def create_webrtc_router(
         try:
             peer_connection = _create_peer_connection(backend, stun_servers=effective_stun_servers)
         except Exception as exc:
-            # The tracker was created first, so explicitly release it if an
-            # optional media-runtime/configuration error prevents peer setup.
             await peer_registry.close_session(session_id)
             LOGGER.exception("Unable to initialize WebRTC peer for demo session %s", session_id)
             raise HTTPException(
@@ -424,12 +430,7 @@ def create_webrtc_router(
             if getattr(track, "kind", None) != "video" or video_attached:
                 return
             video_attached = True
-            # The browser is the only video sender.  Keep this task attached
-            # to the peer so registry teardown can cancel it before closing
-            # the aiortc connection.
-            ingest_task = asyncio.create_task(
-                _consume_video_track(session_manager, session_id, track)
-            )
+            ingest_task = asyncio.create_task(_consume_video_track(session_manager, session_id, track))
             tasks = getattr(peer_connection, "_crowd_ingest_tasks", None)
             if tasks is None:
                 tasks = []
@@ -467,13 +468,116 @@ def create_webrtc_router(
                     "message": "The peer did not produce a usable SDP answer.",
                 },
             )
-        return WebRTCOfferResponse(
-            session_id=session_id,
-            sdp=answer_sdp,
-            type="answer",
-            mode=response_mode,  # manager is the source of truth for normalized mode.
-            expires_in_seconds=response_ttl,
+        return (
+            WebRTCOfferResponse(
+                session_id=session_id,
+                sdp=answer_sdp,
+                type="answer",
+                mode=response_mode,
+                expires_in_seconds=response_ttl,
+            ),
+            peer_connection,
         )
+
+    @router.post(
+        "/webrtc/offer",
+        response_model=WebRTCOfferResponse,
+        status_code=status.HTTP_201_CREATED,
+    )
+    async def create_webrtc_offer(offer: WebRTCOfferRequest) -> WebRTCOfferResponse:
+        if not allow_detached_offer:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "webrtc_lifecycle_socket_required",
+                    "message": "This deployment requires /api/v1/webrtc/connect WebSocket signaling.",
+                },
+            )
+        response, _peer_connection = await accept_offer(offer)
+        return response
+
+    @router.websocket("/webrtc/connect")
+    async def connect_webrtc(websocket: WebSocket) -> None:
+        """Keep signaling, media ingestion, and metadata in one ASGI call."""
+
+        origin = (websocket.headers.get("origin") or "").rstrip("/")
+        if origin and allowed_websocket_origins and origin not in allowed_websocket_origins:
+            await websocket.close(code=4403, reason="Frontend origin is not allowed")
+            return
+        await websocket.accept()
+        response: WebRTCOfferResponse | None = None
+        peer_connection: Any | None = None
+        receive_task: asyncio.Task[dict[str, Any]] | None = None
+        try:
+            raw_offer = await asyncio.wait_for(websocket.receive_json(), timeout=15.0)
+            offer = WebRTCOfferRequest.model_validate(raw_offer)
+            response, peer_connection = await accept_offer(offer)
+            await websocket.send_json(
+                {"event": "answer", "answer": response.model_dump(mode="json")}
+            )
+            last_sequence: int | None = None
+            receive_task = asyncio.create_task(websocket.receive())
+            while not receive_task.done():
+                peer_state = str(getattr(peer_connection, "connectionState", "")).lower()
+                if peer_state in {"failed", "closed"}:
+                    break
+                result = session_manager.latest_result(response.session_id)
+                sequence = getattr(result, "sequence", None)
+                if (
+                    metadata_payload_factory is not None
+                    and isinstance(sequence, int)
+                    and sequence != last_sequence
+                ):
+                    await websocket.send_json(
+                        {
+                            "event": "metadata",
+                            "data": metadata_payload_factory(response.session_id),
+                        }
+                    )
+                    last_sequence = sequence
+                await asyncio.sleep(0.05)
+            if receive_task.done():
+                message = receive_task.result()
+                if message.get("type") != "websocket.disconnect":
+                    await websocket.close(code=1000)
+        except (WebSocketDisconnect, asyncio.CancelledError):
+            pass
+        except (ValidationError, asyncio.TimeoutError) as exc:
+            with suppress(Exception):
+                await websocket.send_json(
+                    {
+                        "event": "error",
+                        "error": {"code": "invalid_webrtc_offer", "message": str(exc)},
+                    }
+                )
+                await websocket.close(code=4400, reason="Invalid WebRTC offer")
+        except HTTPException as exc:
+            detail = exc.detail if isinstance(exc.detail, dict) else {"message": str(exc.detail)}
+            with suppress(Exception):
+                await websocket.send_json({"event": "error", "error": detail})
+                await websocket.close(code=4500, reason="WebRTC negotiation failed")
+        except Exception:
+            LOGGER.exception("WebRTC lifecycle WebSocket failed.")
+            with suppress(Exception):
+                await websocket.send_json(
+                    {
+                        "event": "error",
+                        "error": {
+                            "code": "webrtc_connection_failed",
+                            "message": "The WebRTC session could not be established.",
+                        },
+                    }
+                )
+                await websocket.close(code=1011, reason="WebRTC session failed")
+        finally:
+            if receive_task is not None and not receive_task.done():
+                receive_task.cancel()
+                await asyncio.gather(receive_task, return_exceptions=True)
+            if response is not None:
+                await peer_registry.close_session(
+                    response.session_id,
+                    expected_peer=peer_connection,
+                )
 
     # APIRouter intentionally has no State object. This attribute is a small,
     # explicit hand-off for an application factory that wants to store the
