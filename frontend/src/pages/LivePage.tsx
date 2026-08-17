@@ -77,6 +77,7 @@ interface OverlayRenderData {
 }
 
 type TransportMode = 'http' | 'webrtc';
+type CameraFacing = 'user' | 'environment';
 
 const EMPTY_OVERLAY: OverlayRenderData = {
   frameSize: null,
@@ -165,7 +166,7 @@ export const LivePage: React.FC<LivePageProps> = ({
   const [isCameraLive, setIsCameraLive] = useState(false);
   const [activeTransport, setActiveTransport] = useState<TransportMode | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
-  const [facingMode, setFacingMode] = useState<'user' | 'environment'>('user');
+  const [facingMode, setFacingMode] = useState<CameraFacing>('user');
   const [latencyMs, setLatencyMs] = useState<number | null>(null);
   const [cameraFps, setCameraFps] = useState<number | null>(null);
   const [aiUpdateRateHz, setAiUpdateRateHz] = useState<number | null>(null);
@@ -446,8 +447,12 @@ export const LivePage: React.FC<LivePageProps> = ({
     });
   };
 
-  const startStream = async () => {
-    if (isStartingRef.current || isStreaming || isCameraLive) return;
+  const startStream = async (requestedFacing: CameraFacing = facingMode, forceRestart = false) => {
+    // A camera switch stops the current stream and immediately starts a new
+    // one. `isStreaming`/`isCameraLive` can still be stale in this closure
+    // while React commits the state updates from stopStream, so that restart
+    // must explicitly bypass the normal duplicate-start guard.
+    if (isStartingRef.current || (!forceRestart && (isStreaming || isCameraLive))) return;
     isStartingRef.current = true;
     setIsStarting(true);
     setErrorMessage(null);
@@ -465,7 +470,11 @@ export const LivePage: React.FC<LivePageProps> = ({
       let mediaStream: MediaStream;
       try {
         const constraints = {
-          video: { facingMode, width: { ideal: 640 }, height: { ideal: 480 } },
+          video: {
+            facingMode: requestedFacing,
+            width: { ideal: 640 },
+            height: { ideal: 480 },
+          },
           audio: false,
         };
         mediaStream = await requestCameraWithTimeout(constraints);
@@ -479,6 +488,19 @@ export const LivePage: React.FC<LivePageProps> = ({
         }
         console.warn('[WEBCAM] Preferred constraints failed, trying basic video:', e);
         mediaStream = await requestCameraWithTimeout({ video: true, audio: false });
+
+        // A generic `{ video: true }` request commonly selects the front
+        // camera on mobile. Do not silently report that as a successful
+        // back-camera switch when the browser exposes the selected facing.
+        const actualFacing = mediaStream.getVideoTracks()[0]?.getSettings().facingMode;
+        if (requestedFacing === 'environment' && actualFacing === 'user') {
+          mediaStream.getTracks().forEach((track) => track.stop());
+          const error: CameraRequestError = new Error(
+            'Back camera is unavailable. Check browser camera permissions or device support.'
+          );
+          error.code = 'camera_unavailable';
+          throw error;
+        }
       }
 
       if (!isStartingRef.current) {
@@ -594,7 +616,12 @@ export const LivePage: React.FC<LivePageProps> = ({
     setFacingMode(nextFacing);
     if (isCameraLive) {
       stopStream();
-      setTimeout(startStream, 300);
+      // Pass the target explicitly: invoking startStream from this render
+      // would otherwise reuse the old `facingMode` value and reopen the
+      // front camera (or be blocked by the stale live-state guard).
+      window.setTimeout(() => {
+        void startStream(nextFacing, true);
+      }, 300);
     }
   };
 
