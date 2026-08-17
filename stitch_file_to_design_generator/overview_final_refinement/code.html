@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Overview - Crowd Analytics</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    "colors": {
+                        "on-primary-fixed": "#001e2c",
+                        "on-tertiary-container": "#613b00",
+                        "error": "#ffb4ab",
+                        "on-surface": "#d6e4f7",
+                        "primary-fixed": "#c4e7ff",
+                        "sidebar-bg": "#0D1420",
+                        "on-secondary": "#002e6a",
+                        "outline": "#87929a",
+                        "surface-variant": "#293644",
+                        "surface": "#071421",
+                        "tertiary-container": "#f1a02b",
+                        "surface-elevated": "#1A2637",
+                        "surface-container-high": "#1e2b39",
+                        "surface-container": "#14212e",
+                        "on-surface-variant": "#bdc8d1",
+                        "surface-container-highest": "#293644",
+                        "inverse-primary": "#00668a",
+                        "outline-variant": "#3e484f",
+                        "on-primary": "#00354a",
+                        "on-error-container": "#ffdad6",
+                        "text-muted": "#718096",
+                        "surface-primary": "#111A28",
+                        "primary-fixed-dim": "#7bd0ff",
+                        "on-tertiary-fixed-variant": "#653e00",
+                        "surface-dim": "#071421",
+                        "app-bg": "#0A0F18",
+                        "surface-tint": "#7bd0ff",
+                        "border-strong": "#33445C",
+                        "text-primary": "#F1F5F9",
+                        "inverse-surface": "#d6e4f7",
+                        "on-secondary-container": "#e6ecff",
+                        "on-secondary-fixed": "#001a42",
+                        "surface-container-lowest": "#030f1c",
+                        "secondary": "#adc6ff",
+                        "secondary-container": "#0566d9",
+                        "surface-bright": "#2e3a49",
+                        "border-default": "#243247",
+                        "background": "#071421",
+                        "tertiary": "#ffc176",
+                        "on-background": "#d6e4f7",
+                        "surface-container-low": "#101c2a",
+                        "tertiary-fixed": "#ffddb8",
+                        "inverse-on-surface": "#253140",
+                        "warning": "#F59E0B",
+                        "primary": "#8ed5ff",
+                        "on-primary-container": "#004965",
+                        "danger": "#EF4444",
+                        "secondary-fixed-dim": "#adc6ff",
+                        "on-error": "#690005",
+                        "on-tertiary": "#472a00",
+                        "on-primary-fixed-variant": "#004c69",
+                        "primary-container": "#38bdf8",
+                        "secondary-fixed": "#d8e2ff",
+                        "error-container": "#93000a",
+                        "tertiary-fixed-dim": "#ffb960",
+                        "on-tertiary-fixed": "#2a1700",
+                        "success": "#22C55E",
+                        "surface-secondary": "#162131",
+                        "on-secondary-fixed-variant": "#004395"
+                    },
+                    "borderRadius": {
+                        "DEFAULT": "0.25rem",
+                        "lg": "0.5rem",
+                        "xl": "0.75rem",
+                        "full": "9999px"
+                    },
+                    "spacing": {
+                        "card-padding": "20px",
+                        "margin-page": "48px",
+                        "sidebar-width": "224px",
+                        "unit": "4px",
+                        "gutter": "32px"
+                    },
+                    "fontFamily": {
+                        "body-sm": ["Inter"],
+                        "display-lg": ["Inter"],
+                        "headline-sm": ["Inter"],
+                        "label-md": ["Inter"],
+                        "title-md": ["Inter"],
+                        "body-md": ["Inter"],
+                        "technical-data": ["JetBrains Mono"],
+                        "display-md": ["Inter"]
+                    },
+                    "fontSize": {
+                        "body-sm": ["13px", { "lineHeight": "18px", "fontWeight": "400" }],
+                        "display-lg": ["36px", { "lineHeight": "44px", "letterSpacing": "-0.02em", "fontWeight": "600" }],
+                        "headline-sm": ["20px", { "lineHeight": "28px", "fontWeight": "600" }],
+                        "label-md": ["12px", { "lineHeight": "16px", "letterSpacing": "0.05em", "fontWeight": "600" }],
+                        "title-md": ["16px", { "lineHeight": "24px", "fontWeight": "600" }],
+                        "body-md": ["14px", { "lineHeight": "20px", "fontWeight": "400" }],
+                        "technical-data": ["12px", { "lineHeight": "16px", "fontWeight": "400" }],
+                        "display-md": ["28px", { "lineHeight": "36px", "letterSpacing": "-0.01em", "fontWeight": "600" }]
+                    }
+                },
+            },
+        }
+    </script>
+<style>
+        body { font-family: 'Inter', sans-serif; }
+        .material-symbols-outlined { font-family: 'Material Symbols Outlined'; font-weight: normal; font-style: normal; font-size: 24px; line-height: 1; letter-spacing: normal; text-transform: none; display: inline-block; white-space: nowrap; word-wrap: normal; direction: ltr; -webkit-font-feature-settings: 'liga'; -webkit-font-smoothing: antialiased; }
+    </style>
+</head>
+<body class="bg-app-bg text-on-surface min-h-screen flex">
+<!-- SideNavBar (from JSON) -->
+<nav class="bg-sidebar-bg fixed left-0 top-0 h-full w-[224px] flex flex-col h-full py-6 z-20 border-r border-border-default">
+<div class="px-6 mb-8">
+<h1 class="font-display-md text-display-md font-semibold text-text-primary tracking-tight">Crowd Analytics</h1>
+<p class="font-body-sm text-body-sm text-text-muted mt-1">Indoor Monitoring</p>
+</div>
+<div class="px-4 mb-6">
+<button class="w-full bg-surface-secondary text-text-primary border border-border-default font-label-md text-label-md py-2 px-4 rounded-DEFAULT flex items-center justify-center gap-2 hover:bg-surface-elevated transition-colors">
+<span class="material-symbols-outlined text-[18px]">play_arrow</span>
+                Start Monitoring
+            </button>
+</div>
+<div class="flex-1 overflow-y-auto px-4 space-y-1">
+<a class="flex items-center gap-3 px-3 py-2.5 rounded-DEFAULT text-primary font-bold bg-surface-container-highest" href="#">
+<span class="material-symbols-outlined" data-weight="fill" style="font-variation-settings: 'FILL' 1;">dashboard</span>
+<span class="font-title-md text-title-md">Overview</span>
+</a>
+<a class="flex items-center gap-3 px-3 py-2.5 rounded-DEFAULT text-text-muted font-body-md hover:bg-surface-container-highest hover:text-text-primary transition-colors cursor-pointer active:opacity-80 transition-all" href="#">
+<span class="material-symbols-outlined">videocam</span>
+<span>Live Monitor</span>
+</a>
+<a class="flex items-center gap-3 px-3 py-2.5 rounded-DEFAULT text-text-muted font-body-md hover:bg-surface-container-highest hover:text-text-primary transition-colors cursor-pointer active:opacity-80 transition-all" href="#">
+<span class="material-symbols-outlined">leaderboard</span>
+<span>Analytics</span>
+</a>
+<a class="flex items-center gap-3 px-3 py-2.5 rounded-DEFAULT text-text-muted font-body-md hover:bg-surface-container-highest hover:text-text-primary transition-colors cursor-pointer active:opacity-80 transition-all" href="#">
+<span class="material-symbols-outlined">settings_input_component</span>
+<span>Room Setup</span>
+</a>
+<a class="flex items-center gap-3 px-3 py-2.5 rounded-DEFAULT text-text-muted font-body-md hover:bg-surface-container-highest hover:text-text-primary transition-colors cursor-pointer active:opacity-80 transition-all" href="#">
+<span class="material-symbols-outlined">analytics</span>
+<span>Video Analysis</span>
+</a>
+<a class="flex items-center gap-3 px-3 py-2.5 rounded-DEFAULT text-text-muted font-body-md hover:bg-surface-container-highest hover:text-text-primary transition-colors cursor-pointer active:opacity-80 transition-all" href="#">
+<span class="material-symbols-outlined">settings</span>
+<span>System</span>
+</a>
+</div>
+<div class="mt-auto px-4 pt-4 border-t border-border-default space-y-1">
+<a class="flex items-center gap-3 px-3 py-2.5 rounded-DEFAULT text-text-muted font-body-md hover:bg-surface-container-highest hover:text-text-primary transition-colors cursor-pointer active:opacity-80 transition-all" href="#">
+<span class="material-symbols-outlined">help</span>
+<span>Support</span>
+</a>
+<a class="flex items-center gap-3 px-3 py-2.5 rounded-DEFAULT text-text-muted font-body-md hover:bg-surface-container-highest hover:text-text-primary transition-colors cursor-pointer active:opacity-80 transition-all" href="#">
+<span class="material-symbols-outlined">logout</span>
+<span>Logout</span>
+</a>
+</div>
+</nav>
+<!-- Main Content Area -->
+<div class="flex-1 ml-[224px] flex flex-col min-h-screen">
+<!-- TopNavBar (from JSON) -->
+<header class="bg-app-bg docked full-width top-0 border-b border-border-default flat no shadows flex justify-between items-center w-full px-margin-page h-16 z-10 sticky">
+<div class="flex items-center gap-8 h-full">
+<nav class="flex h-full gap-6">
+<a class="flex items-center h-full text-text-primary font-title-md text-title-md" href="#">Classroom A</a>
+</nav>
+</div>
+<div class="flex items-center gap-6">
+<span class="font-label-md text-label-md text-text-primary uppercase tracking-wider flex items-center gap-2">
+<span class="w-2 h-2 rounded-full bg-success"></span>
+                    Live
+                </span>
+<span class="text-text-muted font-label-md text-label-md uppercase hover:text-primary transition-colors cursor-pointer">EN/VN</span>
+<button class="text-text-muted hover:text-primary transition-colors cursor-pointer active:scale-95 duration-200">
+<span class="material-symbols-outlined">notifications</span>
+</button>
+<button class="text-text-muted hover:text-primary transition-colors cursor-pointer active:scale-95 duration-200">
+<span class="material-symbols-outlined">account_circle</span>
+</button>
+</div>
+</header>
+<!-- Canvas -->
+<main class="flex-1 p-margin-page overflow-y-auto">
+<div class="mb-12 flex justify-between items-end border-b border-border-default pb-6">
+<div>
+<h2 class="font-display-lg text-display-lg text-text-primary mb-2 tracking-tight">Overview</h2>
+<p class="font-body-md text-body-md text-text-muted">Classroom A · Live room status</p>
+</div>
+<div class="text-right">
+<div class="font-technical-data text-technical-data text-text-muted uppercase tracking-widest">Last Updated: Just now</div>
+</div>
+</div>
+<div class="grid grid-cols-1 lg:grid-cols-12 gap-16">
+<!-- Primary Monitoring Zone -->
+<div class="lg:col-span-8 flex flex-col space-y-16">
+<!-- Visual Anchor: Dominant Occupancy -->
+<div>
+<h3 class="font-label-md text-label-md text-text-muted uppercase tracking-wider mb-4">Current Room</h3>
+<div class="font-display-lg text-[120px] leading-[1] font-semibold text-text-primary tracking-tighter mb-2">26</div>
+<div class="font-title-md text-title-md text-text-muted mb-12">People currently in room</div>
+<div class="flex gap-12 border-b border-border-default pb-8 mb-8">
+<div>
+<div class="font-title-md text-title-md text-text-muted mb-2">Moving</div>
+<div class="font-display-md text-display-md text-primary tracking-tight">3</div>
+</div>
+<div>
+<div class="font-title-md text-title-md text-text-muted mb-2">Stationary</div>
+<div class="font-display-md text-display-md text-text-primary tracking-tight">23</div>
+</div>
+</div>
+<div class="grid grid-cols-1 md:grid-cols-3 gap-8">
+<div>
+<div class="font-label-md text-label-md text-text-muted uppercase tracking-wider mb-2">Occupancy</div>
+<div class="font-display-md text-display-md text-text-primary tracking-tight">81%</div>
+</div>
+<div>
+<div class="font-label-md text-label-md text-text-muted uppercase tracking-wider mb-2">Density</div>
+<div class="font-display-md text-display-md text-text-primary tracking-tight">0.41 <span class="text-text-muted font-normal text-sm">/m²</span></div>
+</div>
+<div>
+<div class="font-label-md text-label-md text-text-muted uppercase tracking-wider mb-2">Seats</div>
+<div class="font-display-md text-display-md text-text-primary tracking-tight">24 <span class="text-text-muted font-normal text-sm">/ 32</span></div>
+</div>
+</div>
+</div>
+</div>
+<!-- Secondary Data Column -->
+<div class="lg:col-span-4 lg:border-l lg:border-border-default lg:pl-16 flex flex-col space-y-16">
+<!-- Room Flow Typographic -->
+<div>
+<h3 class="font-label-md text-label-md text-text-muted uppercase tracking-wider mb-8">Room Flow</h3>
+<div class="space-y-6">
+<div class="flex justify-between items-baseline border-b border-border-default pb-4">
+<div>
+<span class="font-headline-sm text-headline-sm text-text-primary block">IN</span>
+<span class="font-body-sm text-body-sm text-text-muted">31 total</span>
+</div>
+<span class="font-technical-data text-technical-data text-success text-base">+3.2/min</span>
+</div>
+<div class="flex justify-between items-baseline border-b border-border-default pb-4">
+<div>
+<span class="font-headline-sm text-headline-sm text-text-muted block">OUT</span>
+<span class="font-body-sm text-body-sm text-text-muted">5 total</span>
+</div>
+<span class="font-technical-data text-technical-data text-warning text-base">1.1/min</span>
+</div>
+<div class="flex justify-between items-baseline pt-2">
+<span class="font-title-md text-title-md text-text-primary uppercase tracking-wider">NET FLOW</span>
+<span class="font-technical-data text-technical-data text-primary text-base">+2.1/min</span>
+</div>
+</div>
+</div>
+<!-- System Status -->
+<div>
+<h3 class="font-label-md text-label-md text-text-muted uppercase tracking-wider mb-6">Room Status</h3>
+<p class="font-body-md text-body-md text-success flex items-center gap-2 mb-3">
+<span class="w-1.5 h-1.5 rounded-full bg-success"></span>
+                    Monitoring active
+                </p>
+<p class="font-technical-data text-technical-data text-text-muted leading-relaxed">All sensors active. Data streaming optimal.</p>
+</div>
+</div>
+</div>
+</main>
+</div>
+</body></html>

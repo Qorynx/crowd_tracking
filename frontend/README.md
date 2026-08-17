@@ -33,6 +33,7 @@ is intentionally hosted on a different origin.
 npm run check:workspace
 npm run lint
 npm run build
+npm run check:ship
 ```
 
 `check:workspace` uses only Node's standard library and does not require
@@ -47,5 +48,11 @@ environment settings; do not rely on backend static-file hosting. Dashboard
 pages and the Recharts radar panel are code-split, so the initial entry chunk
 stays small and optional pages load on demand.
 
+For Vercel, use this directory as the project root. `vercel.json` runs the
+complete ship check and writes only `dist`; the build fails if
+`VITE_API_BASE_URL` is missing or is not a clean HTTPS origin.
+
 See [docs/frontend-migration.md](../docs/frontend-migration.md) for the
 current ownership model, environment assumptions, and next migration gates.
+The ordered Modal/Vercel release checklist is in
+[docs/deploy-modal-vercel.md](../docs/deploy-modal-vercel.md).

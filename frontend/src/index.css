@@ -1,110 +1,70 @@
 @import "tailwindcss";
 
+@theme {
+  --color-app-bg: #0A0F18;
+  --color-sidebar-bg: #0D1420;
+  --color-surface-primary: #111A28;
+  --color-surface-secondary: #162131;
+  --color-surface-elevated: #1A2637;
+  --color-surface-container-high: #1E2B39;
+  --color-surface-container-highest: #293644;
+  --color-surface-container-lowest: #030F1C;
+  --color-border-default: #243247;
+  --color-border-strong: #33445C;
+  --color-text-primary: #F1F5F9;
+  --color-text-muted: #718096;
+  --color-primary: #38BDF8;
+  --color-primary-container: #38BDF8;
+  --color-primary-fixed: #C4E7FF;
+  --color-primary-fixed-dim: #7BD0FF;
+  --color-secondary: #ADC6FF;
+  --color-tertiary: #FFC176;
+  --color-tertiary-container: #F1A02B;
+  --color-success: #22C55E;
+  --color-warning: #F59E0B;
+  --color-danger: #EF4444;
+  --color-surface-tint: #7BD0FF;
+
+  --font-sans: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
+}
+
 @layer base {
-  :root {
-    --bg-main: #07111e;
-    --bg-surface: #0d1e34;
-    --bg-surface-hover: #122744;
-    --border-color: rgba(56, 189, 248, 0.4);
-    --border-glow: rgba(0, 240, 255, 0.5);
-
-    --neon-cyan: #00f0ff;
-    --neon-blue: #38bdf8;
-    --neon-purple: #a855f7;
-    --neon-gold: #f59e0b;
-    --neon-green: #10b981;
-
-    --text-primary: #f8fafc;
-    --text-muted: #94a3b8;
-  }
-
   body {
-    background-color: #07111e;
-    background-image: 
-      radial-gradient(ellipse at 50% 0%, rgba(14, 165, 233, 0.15), transparent 70%),
-      repeating-linear-gradient(135deg, rgba(14, 165, 233, 0.03) 0px, rgba(14, 165, 233, 0.03) 1px, transparent 1px, transparent 16px);
-    color: #f8fafc;
-    font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background-color: #0A0F18;
+    color: #F1F5F9;
+    font-family: var(--font-sans);
     min-height: 100vh;
     margin: 0;
     overflow-x: hidden;
   }
 
   code, pre, .font-mono {
-    font-family: 'JetBrains Mono', monospace;
+    font-family: var(--font-mono);
   }
 }
 
-/* Cyber Frame Card Styling - Matching uploaded panel image */
-.cyber-card {
-  background-color: #0d1e34;
-  background-image: 
-    radial-gradient(circle at top right, rgba(0, 240, 255, 0.06), transparent 60%),
-    repeating-linear-gradient(135deg, rgba(0, 240, 255, 0.02) 0px, rgba(0, 240, 255, 0.02) 2px, transparent 2px, transparent 12px);
-  border: 1px solid rgba(56, 189, 248, 0.4);
-  box-shadow: 0 8px 24px -4px rgba(2, 132, 199, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.08);
-  border-radius: 10px;
-  position: relative;
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-}
-
-.cyber-card:hover {
-  transform: translateY(-3px);
-  border-color: rgba(0, 240, 255, 0.75);
-  box-shadow: 0 12px 28px -4px rgba(0, 240, 255, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.15);
-}
-
-/* Chamfered 45-degree Tech Frame Button */
-.cyber-btn {
-  background: linear-gradient(135deg, #0f2b48 0%, #0d1e34 100%);
-  border: 1px solid rgba(56, 189, 248, 0.5);
-  box-shadow: 0 4px 12px rgba(2, 132, 199, 0.2);
-  color: #f8fafc;
-  transition: all 0.2s ease;
-}
-
-.cyber-btn:hover {
-  border-color: #00f0ff;
-  box-shadow: 0 0 15px rgba(0, 240, 255, 0.4);
-  transform: scale(1.02);
-}
-
-/* Circle Vector Hologram Radar Ring Rotation */
-@keyframes radar-spin {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
-}
-
-.radar-ring {
-  animation: radar-spin 12s linear infinite;
-}
-
-/* Slanted Equalizer Segment Bar */
-.equalizer-bar {
-  background: repeating-linear-gradient(
-    90deg,
-    #f59e0b,
-    #f59e0b 6px,
-    transparent 6px,
-    transparent 10px
-  );
-}
-
-/* Custom scrollbars */
+/* Subtle custom scrollbars */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
 }
 
 ::-webkit-scrollbar-track {
-  background: #07111e;
+  background: #0A0F18;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: rgba(56, 189, 248, 0.4);
+  background: #243247;
   border-radius: 3px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #00f0ff;
+  background: #33445C;
+}
+
+/* Floor grid pattern for room setup */
+.grid-pattern {
+  background-image: radial-gradient(#243247 1px, transparent 1px);
+  background-size: 28px 28px;
 }

@@ -90,7 +90,7 @@ export function mapAnalyticsPayload(rawStats: UnknownRecord, previous: Analytics
     return {
       name,
       peopleCount: firstFinite(zone.current_count) ?? 0,
-      density: firstFinite(zone.density_people_per_m2) ?? 0,
+      density: firstFinite(zone.density_people_per_m2) ?? null,
       avgDwellTime: formatDwellTime(dwellSeconds),
       percentage: totalCrowd > 0 ? Math.round(((firstFinite(zone.current_count) ?? 0) / totalCrowd) * 100) : 0,
     };

@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>System Diagnostics - Crowd Analytics</title>
+<!-- Google Fonts -->
+<link href="https://fonts.googleapis.com" rel="preconnect"/>
+<link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet"/>
+<!-- Material Symbols -->
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<!-- Tailwind CSS -->
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<!-- Tailwind Config -->
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    "colors": {
+                        "surface-dim": "#071421",
+                        "surface-container-lowest": "#030f1c",
+                        "on-secondary-container": "#e6ecff",
+                        "on-surface": "#d6e4f7",
+                        "on-primary-fixed": "#001e2c",
+                        "surface-secondary": "#162131",
+                        "surface-primary": "#111A28",
+                        "success": "#22C55E",
+                        "on-primary-container": "#004965",
+                        "on-primary-fixed-variant": "#004c69",
+                        "primary-fixed": "#c4e7ff",
+                        "on-error": "#690005",
+                        "inverse-surface": "#d6e4f7",
+                        "on-error-container": "#ffdad6",
+                        "secondary-fixed": "#d8e2ff",
+                        "tertiary-fixed-dim": "#ffb960",
+                        "tertiary-fixed": "#ffddb8",
+                        "sidebar-bg": "#0D1420",
+                        "primary-container": "#38bdf8",
+                        "on-surface-variant": "#bdc8d1",
+                        "primary": "#8ed5ff",
+                        "on-secondary-fixed": "#001a42",
+                        "secondary-fixed-dim": "#adc6ff",
+                        "on-primary": "#00354a",
+                        "on-tertiary": "#472a00",
+                        "text-muted": "#718096",
+                        "surface-variant": "#293644",
+                        "surface-elevated": "#1A2637",
+                        "text-primary": "#F1F5F9",
+                        "inverse-primary": "#00668a",
+                        "surface-container-high": "#1e2b39",
+                        "on-secondary": "#002e6a",
+                        "border-strong": "#33445C",
+                        "on-secondary-fixed-variant": "#004395",
+                        "secondary-container": "#0566d9",
+                        "primary-fixed-dim": "#7bd0ff",
+                        "background": "#071421",
+                        "outline-variant": "#3e484f",
+                        "tertiary": "#ffc176",
+                        "surface-container-highest": "#293644",
+                        "secondary": "#adc6ff",
+                        "outline": "#87929a",
+                        "tertiary-container": "#f1a02b",
+                        "danger": "#EF4444",
+                        "on-tertiary-fixed-variant": "#653e00",
+                        "inverse-on-surface": "#253140",
+                        "app-bg": "#0A0F18",
+                        "border-default": "#243247",
+                        "error": "#ffb4ab",
+                        "surface-container-low": "#101c2a",
+                        "on-background": "#d6e4f7",
+                        "error-container": "#93000a",
+                        "surface": "#071421",
+                        "surface-container": "#14212e",
+                        "surface-bright": "#2e3a49",
+                        "on-tertiary-container": "#613b00",
+                        "on-tertiary-fixed": "#2a1700",
+                        "warning": "#F59E0B",
+                        "surface-tint": "#7bd0ff"
+                    },
+                    "borderRadius": {
+                        "DEFAULT": "0.25rem",
+                        "lg": "0.5rem",
+                        "xl": "0.75rem",
+                        "full": "9999px"
+                    },
+                    "spacing": {
+                        "card-padding": "20px",
+                        "unit": "4px",
+                        "margin-page": "32px",
+                        "gutter": "24px",
+                        "sidebar-width": "224px"
+                    },
+                    "fontFamily": {
+                        "display-lg": ["Inter"],
+                        "body-sm": ["Inter"],
+                        "technical-data": ["JetBrains Mono"],
+                        "headline-sm": ["Inter"],
+                        "title-md": ["Inter"],
+                        "body-md": ["Inter"],
+                        "display-md": ["Inter"],
+                        "label-md": ["Inter"]
+                    },
+                    "fontSize": {
+                        "display-lg": ["36px", { "lineHeight": "44px", "letterSpacing": "-0.02em", "fontWeight": "600" }],
+                        "body-sm": ["13px", { "lineHeight": "18px", "fontWeight": "400" }],
+                        "technical-data": ["12px", { "lineHeight": "16px", "fontWeight": "400" }],
+                        "headline-sm": ["20px", { "lineHeight": "28px", "fontWeight": "600" }],
+                        "title-md": ["16px", { "lineHeight": "24px", "fontWeight": "600" }],
+                        "body-md": ["14px", { "lineHeight": "20px", "fontWeight": "400" }],
+                        "display-md": ["28px", { "lineHeight": "36px", "letterSpacing": "-0.01em", "fontWeight": "600" }],
+                        "label-md": ["12px", { "lineHeight": "16px", "letterSpacing": "0.02em", "fontWeight": "500" }]
+                    }
+                }
+            }
+        }
+    </script>
+<style>
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+        }
+        .icon-fill {
+            font-variation-settings: 'FILL' 1, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+        }
+    </style>
+</head>
+<body class="bg-background text-text-primary antialiased min-h-screen">
+<!-- SideNavBar (Shared Component) -->
+<nav class="fixed left-0 top-0 h-full w-[224px] bg-sidebar-bg border-r border-border-default z-50 flex flex-col py-6">
+<!-- Header -->
+<div class="px-6 mb-8 flex items-center gap-3">
+<div class="w-8 h-8 rounded bg-primary-container flex items-center justify-center text-on-primary-container">
+<span class="material-symbols-outlined icon-fill text-lg">analytics</span>
+</div>
+<div>
+<h1 class="font-title-md text-title-md text-primary font-semibold">Crowd Analytics</h1>
+<p class="font-body-sm text-body-sm text-text-muted">Admin Console</p>
+</div>
+</div>
+<!-- CTA -->
+<div class="px-4 mb-6">
+<button class="w-full bg-primary text-app-bg font-label-md text-label-md py-2.5 rounded-DEFAULT flex items-center justify-center gap-2 hover:bg-primary-fixed-dim transition-colors">
+<span class="material-symbols-outlined text-[18px]">add</span>
+                New Analysis
+            </button>
+</div>
+<!-- Tabs -->
+<div class="flex-1 flex flex-col gap-1 px-3">
+<a class="flex items-center gap-3 px-3 py-2.5 rounded-DEFAULT text-text-muted font-body-md text-body-md hover:bg-surface-container-highest hover:text-text-primary transition-colors cursor-pointer active:opacity-80" href="#">
+<span class="material-symbols-outlined text-[20px]">dashboard</span>
+                Overview
+            </a>
+<a class="flex items-center gap-3 px-3 py-2.5 rounded-DEFAULT text-text-muted font-body-md text-body-md hover:bg-surface-container-highest hover:text-text-primary transition-colors cursor-pointer active:opacity-80" href="#">
+<span class="material-symbols-outlined text-[20px]">videocam</span>
+                Live Monitor
+            </a>
+<a class="flex items-center gap-3 px-3 py-2.5 rounded-DEFAULT text-text-muted font-body-md text-body-md hover:bg-surface-container-highest hover:text-text-primary transition-colors cursor-pointer active:opacity-80" href="#">
+<span class="material-symbols-outlined text-[20px]">leaderboard</span>
+                Analytics
+            </a>
+<a class="flex items-center gap-3 px-3 py-2.5 rounded-DEFAULT text-text-muted font-body-md text-body-md hover:bg-surface-container-highest hover:text-text-primary transition-colors cursor-pointer active:opacity-80" href="#">
+<span class="material-symbols-outlined text-[20px]">settings_input_component</span>
+                Room Setup
+            </a>
+<a class="flex items-center gap-3 px-3 py-2.5 rounded-DEFAULT text-text-muted font-body-md text-body-md hover:bg-surface-container-highest hover:text-text-primary transition-colors cursor-pointer active:opacity-80" href="#">
+<span class="material-symbols-outlined text-[20px]">analytics</span>
+                Video Analysis
+            </a>
+<!-- Active Tab: System -->
+<a class="flex items-center gap-3 px-3 py-2.5 rounded-DEFAULT text-primary font-bold border-r-2 border-primary bg-surface-container-highest transition-colors cursor-pointer active:opacity-80" href="#">
+<span class="material-symbols-outlined text-[20px]">settings</span>
+                System
+            </a>
+</div>
+<!-- Footer Tabs -->
+<div class="mt-auto flex flex-col gap-1 px-3 pt-4 border-t border-border-default/50">
+<a class="flex items-center gap-3 px-3 py-2.5 rounded-DEFAULT text-text-muted font-body-md text-body-md hover:bg-surface-container-highest hover:text-text-primary transition-colors cursor-pointer" href="#">
+<span class="material-symbols-outlined text-[20px]">help</span>
+                Support
+            </a>
+<a class="flex items-center gap-3 px-3 py-2.5 rounded-DEFAULT text-text-muted font-body-md text-body-md hover:bg-surface-container-highest hover:text-text-primary transition-colors cursor-pointer" href="#">
+<span class="material-symbols-outlined text-[20px]">logout</span>
+                Logout
+            </a>
+</div>
+</nav>
+<!-- TopNavBar (Shared Component) -->
+<header class="fixed top-0 ml-[224px] w-[calc(100%-224px)] h-16 bg-surface dark:bg-surface-dim z-40 flex justify-between items-center px-margin-page border-b border-border-default">
+<!-- Navigation Links -->
+<div class="flex items-center h-full gap-8">
+<div class="h-full flex items-center text-primary border-b-2 border-primary pt-1 cursor-pointer">
+<span class="font-title-md text-title-md">Classroom A</span>
+</div>
+</div>
+<!-- Trailing Actions -->
+<div class="flex items-center gap-6">
+<div class="flex items-center gap-4">
+<button class="font-label-md text-label-md text-on-surface-variant hover:text-primary transition-colors uppercase tracking-wider">EN/VN</button>
+<div class="w-px h-4 bg-border-default"></div>
+<button class="flex items-center gap-2 font-label-md text-label-md text-success border border-success/30 bg-success/10 px-3 py-1.5 rounded-full uppercase tracking-wider">
+<span class="w-2 h-2 rounded-full bg-success"></span>
+                    Live Status
+                </button>
+</div>
+<div class="flex items-center gap-3 text-on-surface-variant">
+<button class="w-8 h-8 flex items-center justify-center hover:text-primary transition-colors cursor-pointer active:scale-95 duration-200">
+<span class="material-symbols-outlined text-[20px]">notifications</span>
+</button>
+<button class="w-8 h-8 flex items-center justify-center hover:text-primary transition-colors cursor-pointer active:scale-95 duration-200">
+<span class="material-symbols-outlined text-[24px]">account_circle</span>
+</button>
+</div>
+</div>
+</header>
+<!-- Main Content Canvas -->
+<main class="ml-[224px] pt-16 min-h-screen pb-24">
+<div class="px-margin-page py-8 max-w-5xl mx-auto">
+<!-- Page Header -->
+<div class="flex items-end justify-between mb-12">
+<div>
+<h1 class="font-display-lg text-display-lg text-text-primary mb-2">System Diagnostics</h1>
+<p class="font-body-md text-body-md text-on-surface-variant">Real-time telemetry and pipeline health.</p>
+</div>
+<!-- Global Status Pill -->
+<div class="flex items-center gap-2 px-4 py-1.5 rounded-full border border-success/20 bg-success/10 text-success">
+<span class="material-symbols-outlined text-[16px] icon-fill">check_circle</span>
+<span class="font-label-md text-label-md uppercase tracking-wider">System Healthy</span>
+</div>
+</div>
+<!-- Diagnostics Data Rows -->
+<div class="space-y-16">
+<!-- Category: System Status -->
+<section>
+<h2 class="font-headline-sm text-headline-sm text-text-primary mb-4 flex items-center gap-2">
+<span class="material-symbols-outlined text-text-muted text-[20px]">memory</span>
+                        System Status
+                    </h2>
+<div class="border-t border-border-default">
+<div class="flex justify-between items-center py-4 border-b border-border-default group hover:bg-surface-secondary/30 transition-colors px-2 -mx-2">
+<span class="font-body-md text-body-md text-on-surface-variant group-hover:text-text-primary transition-colors">Core Service</span>
+<span class="font-technical-data text-technical-data text-success flex items-center gap-2">
+                                Online
+                                <span class="w-1.5 h-1.5 rounded-full bg-success animate-pulse"></span>
+</span>
+</div>
+<div class="flex justify-between items-center py-4 border-b border-border-default group hover:bg-surface-secondary/30 transition-colors px-2 -mx-2">
+<span class="font-body-md text-body-md text-on-surface-variant group-hover:text-text-primary transition-colors">Uptime</span>
+<span class="font-technical-data text-technical-data text-text-primary">14d 08h 22m</span>
+</div>
+</div>
+</section>
+<!-- Category: Connection -->
+<section>
+<h2 class="font-headline-sm text-headline-sm text-text-primary mb-4 flex items-center gap-2">
+<span class="material-symbols-outlined text-text-muted text-[20px]">router</span>
+                        Connection
+                    </h2>
+<div class="border-t border-border-default">
+<div class="flex justify-between items-center py-4 border-b border-border-default group hover:bg-surface-secondary/30 transition-colors px-2 -mx-2">
+<span class="font-body-md text-body-md text-on-surface-variant group-hover:text-text-primary transition-colors">Latency P50</span>
+<span class="font-technical-data text-technical-data text-text-primary">68 ms</span>
+</div>
+<div class="flex justify-between items-center py-4 border-b border-border-default group hover:bg-surface-secondary/30 transition-colors px-2 -mx-2">
+<span class="font-body-md text-body-md text-on-surface-variant group-hover:text-text-primary transition-colors">Latency P95</span>
+<span class="font-technical-data text-technical-data text-warning">86 ms</span>
+</div>
+</div>
+</section>
+<!-- Category: Processing -->
+<section>
+<h2 class="font-headline-sm text-headline-sm text-text-primary mb-4 flex items-center gap-2">
+<span class="material-symbols-outlined text-text-muted text-[20px]">speed</span>
+                        Processing
+                    </h2>
+<div class="border-t border-border-default">
+<div class="flex justify-between items-center py-4 border-b border-border-default group hover:bg-surface-secondary/30 transition-colors px-2 -mx-2">
+<span class="font-body-md text-body-md text-on-surface-variant group-hover:text-text-primary transition-colors">Processing Rate</span>
+<span class="font-technical-data text-technical-data text-text-primary">14.1 FPS</span>
+</div>
+<div class="flex justify-between items-center py-4 border-b border-border-default group hover:bg-surface-secondary/30 transition-colors px-2 -mx-2">
+<span class="font-body-md text-body-md text-on-surface-variant group-hover:text-text-primary transition-colors">Update Rate</span>
+<span class="font-technical-data text-technical-data text-text-primary">6.7 Hz</span>
+</div>
+</div>
+</section>
+<!-- Category: Pipeline -->
+<section>
+<h2 class="font-headline-sm text-headline-sm text-text-primary mb-4 flex items-center gap-2">
+<span class="material-symbols-outlined text-text-muted text-[20px]">schema</span>
+                        Pipeline
+                    </h2>
+<div class="border-t border-border-default">
+<div class="flex justify-between items-center py-4 border-b border-border-default group hover:bg-surface-secondary/30 transition-colors px-2 -mx-2">
+<span class="font-body-md text-body-md text-on-surface-variant group-hover:text-text-primary transition-colors">Camera Input</span>
+<span class="font-technical-data text-technical-data text-text-primary">30 FPS</span>
+</div>
+<div class="flex justify-between items-center py-4 border-b border-border-default group hover:bg-surface-secondary/30 transition-colors px-2 -mx-2">
+<span class="font-body-md text-body-md text-on-surface-variant group-hover:text-text-primary transition-colors">Detector Model</span>
+<span class="font-technical-data text-technical-data text-primary">YOLO11n</span>
+</div>
+<div class="flex justify-between items-center py-4 border-b border-border-default group hover:bg-surface-secondary/30 transition-colors px-2 -mx-2">
+<span class="font-body-md text-body-md text-on-surface-variant group-hover:text-text-primary transition-colors">Tracker Engine</span>
+<span class="font-technical-data text-technical-data text-primary">FastTracker</span>
+</div>
+</div>
+</section>
+</div>
+</div>
+</main>
+</body></html>

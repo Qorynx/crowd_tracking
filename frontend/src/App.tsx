@@ -2,7 +2,6 @@ import { lazy, Suspense, useState, useEffect, useCallback } from 'react';
 import { Header } from './components/layout/Header';
 import { Sidebar } from './components/layout/Sidebar';
 import { MobileNav } from './components/layout/MobileNav';
-import { Footer } from './components/layout/Footer';
 import type { PageType, AnalyticsData, LiveStreamTelemetry } from './types/analytics';
 import { CrowdApiError, getHealth, getReadiness } from './api/crowdApi';
 import { mapLiveStreamTelemetry } from './api/telemetryMapper';
@@ -10,9 +9,6 @@ import { mapAnalyticsPayload } from './api/analyticsMapper';
 import type { ApiAvailability } from './api/contracts';
 import { translations, type Language } from './i18n/translations';
 
-// Keep the shell and API health check in the initial bundle. Each dashboard
-// surface is loaded only when selected, which keeps the first paint small and
-// moves optional dependencies such as Recharts out of the entry chunk.
 const OverviewPage = lazy(() => import('./pages/OverviewPage').then(({ OverviewPage: page }) => ({ default: page })));
 const LivePage = lazy(() => import('./pages/LivePage').then(({ LivePage: page }) => ({ default: page })));
 const AnalyticsPage = lazy(() => import('./pages/AnalyticsPage').then(({ AnalyticsPage: page }) => ({ default: page })));
@@ -43,8 +39,10 @@ function createEmptyAnalytics(): AnalyticsData {
 
 function PageLoading() {
   return (
-    <div className="p-6 max-w-7xl mx-auto" role="status" aria-live="polite">
-      <div className="cyber-card p-6 rounded-xl text-sm font-mono text-cyan-300">Loading dashboard module...</div>
+    <div className="p-8 max-w-7xl mx-auto" role="status" aria-live="polite">
+      <div className="bg-surface-primary border border-border-default p-6 rounded-lg text-sm text-text-muted">
+        Loading module...
+      </div>
     </div>
   );
 }
@@ -54,6 +52,7 @@ export function App() {
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [apiStatus, setApiStatus] = useState<ApiAvailability>('checking');
   const [livePageMounted, setLivePageMounted] = useState(false);
+  const isLivePageVisible = activePage === 'live';
 
   // Language State ('vi' | 'en') - Default to Vietnamese ('vi')
   const [lang, setLang] = useState<Language>(() => {
@@ -68,19 +67,16 @@ export function App() {
 
   const t = translations[lang];
 
-  // Keep the live camera/session worker mounted after the first visit. The
-  // previous tabbed UI intentionally preserved this page while hidden, so
-  // switching to analytics or room setup must not tear down an active stream.
+  // Preserve live session and camera worker across page changes
   useEffect(() => {
     if (activePage === 'live') setLivePageMounted(true);
   }, [activePage]);
 
   // Analytics data state
   const [analytics, setAnalytics] = useState<AnalyticsData>(createEmptyAnalytics);
-
   const [telemetry, setTelemetry] = useState<LiveStreamTelemetry>({});
 
-  // Handle Real AI Model Output from Live Page
+  // Handle Real Model Output from Live Page
   const handleAnalyticsUpdate = useCallback((rawStats: any) => {
     if (!rawStats) return;
     setAnalytics((prev) => mapAnalyticsPayload(rawStats, prev));
@@ -95,10 +91,9 @@ export function App() {
     if (sessionId === null) setAnalytics(createEmptyAnalytics());
   }, []);
 
-  const [vietnamTime, setVietnamTime] = useState('');
   const [isLiveStreamActive, setIsLiveStreamActive] = useState(false);
 
-  // Service health/readiness is independent from live session ownership.
+  // Service health and readiness check
   useEffect(() => {
     const controller = new AbortController();
 
@@ -119,76 +114,75 @@ export function App() {
     return () => controller.abort();
   }, []);
 
-  // Real-time Vietnam Time (Asia/Ho_Chi_Minh) Clock
-  useEffect(() => {
-    const updateClock = () => {
-      const now = new Date();
-      const timeStr = now.toLocaleTimeString('vi-VN', {
-        timeZone: 'Asia/Ho_Chi_Minh',
-        hour12: false,
-        hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit',
-      });
-      setVietnamTime(timeStr);
-    };
-    updateClock();
-    const timer = setInterval(updateClock, 1000);
-    return () => clearInterval(timer);
-  }, []);
-
   return (
-    <div className="min-h-screen flex flex-col font-sans transition-colors duration-300">
-      <Header
-        sessionDuration={vietnamTime}
-        lang={lang}
-        onToggleLanguage={toggleLanguage}
-        t={t}
-        isLive={isLiveStreamActive}
-        apiStatus={apiStatus}
-      />
+    <div className="min-h-screen bg-app-bg text-text-primary flex">
+      {/* Shared Desktop Sidebar */}
+      <Sidebar activePage={activePage} onPageChange={setActivePage} t={t} />
 
-      <div className="flex-1 flex overflow-hidden">
-        <Sidebar activePage={activePage} onPageChange={setActivePage} t={t} />
+      {/* Main Content Shell */}
+      <div className="flex-1 md:ml-[224px] flex flex-col min-h-screen">
+        {/* Top Header */}
+        <Header
+          lang={lang}
+          onToggleLanguage={toggleLanguage}
+          t={t}
+          isLive={isLiveStreamActive}
+          apiStatus={apiStatus}
+        />
 
-        <main className="flex-1 overflow-y-auto pb-16 md:pb-0 transition-colors duration-300">
-          <Suspense fallback={<PageLoading />}>
-            {activePage === 'overview' && (
-              <OverviewPage
-                analytics={analytics}
-                roomCalibrated={analytics.density_per_m2 !== null}
-                roomName="Classroom A"
-                t={t}
-              />
-            )}
-
-            {(activePage === 'live' || livePageMounted) && (
-              <div className={activePage === 'live' ? 'block' : 'hidden'}>
+        {/* Page Content Canvas */}
+        <main className="flex-1 overflow-y-auto pb-20 md:pb-6">
+          {/* Keep the camera/session in its own Suspense boundary. Loading a
+              different lazy page must never replace this subtree and trigger
+              LivePage's unmount cleanup. */}
+          {(isLivePageVisible || livePageMounted) && (
+            <Suspense fallback={isLivePageVisible ? <PageLoading /> : null}>
+              <div
+                className={isLivePageVisible ? 'block' : 'fixed w-px h-px overflow-hidden opacity-0 pointer-events-none'}
+                style={isLivePageVisible ? undefined : { left: '-10000px', top: 0 }}
+                aria-hidden={!isLivePageVisible}
+              >
                 <LivePage
                   analytics={analytics}
                   onAnalyticsUpdate={handleAnalyticsUpdate}
                   onTelemetryUpdate={handleTelemetryUpdate}
                   t={t}
+                  isVisible={isLivePageVisible}
                   onStreamingChange={setIsLiveStreamActive}
                   onSessionChange={handleSessionChange}
                 />
               </div>
+            </Suspense>
+          )}
+
+          <Suspense fallback={<PageLoading />}>
+            {activePage === 'overview' && (
+              <OverviewPage
+                analytics={analytics}
+                roomCalibrated={analytics.density_per_m2 !== null}
+                roomName={t.classroomA}
+                isLive={isLiveStreamActive}
+                apiStatus={apiStatus}
+                t={t}
+              />
             )}
 
-            {activePage === 'analytics' && <AnalyticsPage analytics={analytics} t={t} />}
+            {activePage === 'analytics' && (
+              <AnalyticsPage analytics={analytics} t={t} isLive={isLiveStreamActive} />
+            )}
 
             {activePage === 'room' && <RoomSetupPage t={t} sessionId={activeSessionId} />}
 
             {activePage === 'system' && (
-              <SystemPage telemetry={telemetry} t={t} isLive={isLiveStreamActive} />
+              <SystemPage telemetry={telemetry} t={t} isLive={isLiveStreamActive} apiStatus={apiStatus} />
             )}
 
-            {activePage === 'video' && <VideoPage />}
+            {activePage === 'video' && <VideoPage isLive={isLiveStreamActive} />}
           </Suspense>
         </main>
       </div>
 
-      <Footer telemetry={telemetry} isLive={isLiveStreamActive} />
+      {/* Mobile Navigation Bar */}
       <MobileNav activePage={activePage} onPageChange={setActivePage} t={t} />
     </div>
   );

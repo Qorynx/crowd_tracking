@@ -1,40 +1,283 @@
-import React, { useMemo, useState } from 'react';
-import { Activity, PieChart, BarChart3, HelpCircle } from 'lucide-react';
-import type { AnalyticsData, ZoneData } from '../types/analytics';
+import React, { useMemo } from 'react';
+import { Clock, HelpCircle, Grid3X3 } from 'lucide-react';
+import type { AnalyticsData, ZoneData } from '@/types/analytics';
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
+import { Badge } from '@/components/ui/badge';
 
 interface AnalyticsPageProps {
   analytics: AnalyticsData;
   t: any;
+  isLive?: boolean;
 }
 
-const zoneColors = ['bg-cyan-400', 'bg-sky-400', 'bg-purple-400', 'bg-amber-400', 'bg-emerald-400'];
-
-export const AnalyticsPage: React.FC<AnalyticsPageProps> = ({ analytics, t }) => {
-  const [subTab, setSubTab] = useState<'spatial' | 'attributes'>('spatial');
-  const [hoveredZone, setHoveredZone] = useState<string | null>(null);
+export const AnalyticsPage: React.FC<AnalyticsPageProps> = ({ analytics, t, isLive = false }) => {
   const spatialData = analytics.spatial || {};
   const zones = analytics.zones;
   const heatmap = spatialData.heatmap || {};
-  const heatmapValues = Array.isArray(heatmap.values) ? heatmap.values as number[][] : [];
+  const heatmapValues = Array.isArray(heatmap.values) ? (heatmap.values as number[][]) : [];
   const heatmapMax = Math.max(...heatmapValues.flat().map((value) => Number(value) || 0), 0);
-  const density = analytics.density_per_m2;
-
-  const zoneRows = useMemo<ZoneData[]>(() => zones.map((zone) => ({
-    ...zone,
-    peopleCount: Number(zone.peopleCount) || 0,
-    density: Number.isFinite(zone.density) ? zone.density : 0,
-  })), [zones]);
+  const heatmapGridSize = Array.isArray(heatmap.grid_size) ? heatmap.grid_size.map(Number) : [];
+  const zoneRows = useMemo<ZoneData[]>(
+    () =>
+      zones.map((zone) => ({
+        ...zone,
+        peopleCount: Number(zone.peopleCount) || 0,
+        density: Number.isFinite(zone.density) ? zone.density : null,
+      })),
+    [zones]
+  );
 
   return (
-    <div className="p-6 space-y-6 max-w-7xl mx-auto">
-      <div className="flex flex-wrap items-center justify-between gap-4"><div><h2 className="text-xl font-bold font-mono text-slate-100 flex items-center gap-2">{t.spatialTitle}</h2><p className="text-xs text-sky-300/80 font-mono">{t.spatialSub}</p></div><div className="flex space-x-2 bg-[#071120] border border-sky-500/40 p-1 rounded-lg text-xs font-mono"><button onClick={() => setSubTab('spatial')} className={`px-3 py-1.5 rounded-md font-bold flex items-center gap-1.5 transition-all cursor-pointer ${subTab === 'spatial' ? 'bg-cyan-400 text-slate-950' : 'text-slate-400 hover:text-cyan-300'}`}><Activity className="w-3.5 h-3.5" />{t.spatialZonesTab}</button><button onClick={() => setSubTab('attributes')} className={`px-3 py-1.5 rounded-md font-bold flex items-center gap-1.5 transition-all cursor-pointer ${subTab === 'attributes' ? 'bg-cyan-400 text-slate-950' : 'text-slate-400 hover:text-cyan-300'}`}><PieChart className="w-3.5 h-3.5" />{t.visualAttributesTab}</button></div></div>
+    <div className="p-6 sm:p-8 max-w-7xl mx-auto space-y-8">
+      {!isLive && (
+        <div
+          className="rounded-lg border border-warning/30 bg-warning/10 px-4 py-3 text-sm text-text-secondary"
+          role="status"
+          aria-live="polite"
+        >
+          {t.analyticsStandby}
+        </div>
+      )}
 
-      {subTab === 'spatial' && <div className="space-y-6"><div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <div className="cyber-card p-5 space-y-4"><h3 className="text-base font-bold font-mono text-slate-100 flex items-center gap-2"><Activity className="w-4 h-4 text-cyan-400" />{t.heatmapTitle}</h3><div className="bg-[#071120] border border-sky-500/30 rounded-lg min-h-56 p-3 flex items-center justify-center"><div className="w-full max-w-md"><div className="grid gap-0.5" style={{ gridTemplateColumns: `repeat(${heatmapValues[0]?.length || 1}, minmax(0, 1fr))` }}>{heatmapValues.length > 0 ? heatmapValues.flatMap((row, rowIndex) => row.map((value, columnIndex) => { const intensity = heatmapMax > 0 ? Math.min(1, (Number(value) || 0) / heatmapMax) : 0; return <div key={`${rowIndex}-${columnIndex}`} title={`${Number(value || 0).toFixed(2)}`} className="aspect-square rounded-sm" style={{ backgroundColor: intensity > 0 ? `rgba(34, 211, 238, ${0.12 + intensity * 0.82})` : 'rgba(30, 41, 59, 0.35)' }} />; })) : <div className="col-span-full py-16 text-center text-xs text-slate-400 font-mono">No heatmap samples yet.</div>}</div><div className="mt-3 text-center text-xs text-cyan-300 font-mono">{heatmapMax > 0 ? `Peak ${Number(heatmap.peak_value || heatmapMax).toFixed(2)} · ${heatmap.grid_size?.join('×') || 'grid'}` : 'Waiting for confirmed tracks'}</div></div></div></div>
-        <div className="cyber-card p-5 space-y-4"><h3 className="text-base font-bold font-mono text-slate-100 flex items-center gap-2"><BarChart3 className="w-4 h-4 text-cyan-400" />{t.zoneDistribution}</h3><div className="space-y-3 pt-2">{zoneRows.length > 0 ? zoneRows.map((zone, index) => <div key={zone.name} onMouseEnter={() => setHoveredZone(zone.name)} onMouseLeave={() => setHoveredZone(null)} className={`space-y-1.5 p-2 rounded-lg transition-all cursor-pointer ${hoveredZone === zone.name ? 'bg-sky-500/20 border border-cyan-400/50' : ''}`}><div className="flex justify-between text-xs font-mono font-medium"><span className="text-slate-200">{zone.name}</span><span className="text-cyan-400 font-bold">{zone.percentage}% ({zone.peopleCount} người)</span></div><div className="w-full h-3 bg-[#071120] rounded-full overflow-hidden border border-sky-500/30"><div className={`h-full ${zoneColors[index % zoneColors.length]} rounded-full transition-all duration-300`} style={{ width: `${Math.min(100, Math.max(0, zone.percentage))}%` }} /></div></div>) : <div className="py-12 text-center text-xs text-slate-400 font-mono">No configured zones or confirmed tracks.</div>}</div></div>
-      </div><div className="cyber-card p-5 space-y-4"><h3 className="text-base font-bold font-mono text-slate-100">{t.zoneMetricsTitle}</h3><div className="overflow-x-auto"><table className="w-full text-left text-xs font-mono"><thead className="bg-[#071120] text-sky-400 uppercase tracking-wider border-b border-sky-500/30"><tr><th className="px-4 py-3 font-bold">{t.zoneHeader}</th><th className="px-4 py-3 font-bold">{t.peopleHeader}</th><th className="px-4 py-3 font-bold">{t.densityHeader}</th><th className="px-4 py-3 font-bold">{t.dwellHeader}</th></tr></thead><tbody className="divide-y divide-sky-500/20 text-slate-200">{zoneRows.map((zone) => <tr key={zone.name} className="hover:bg-sky-500/10 transition-colors"><td className="px-4 py-3 font-bold text-cyan-400">{zone.name}</td><td className="px-4 py-3 font-bold">{zone.peopleCount}</td><td className="px-4 py-3">{density == null ? '—' : `${zone.density} /m²`}</td><td className="px-4 py-3 text-slate-300">{zone.avgDwellTime}</td></tr>)}</tbody></table>{zoneRows.length === 0 && <div className="text-center py-4 text-xs text-slate-400">No zone data available.</div>}</div></div></div>}
+      <Tabs defaultValue="spatial" className="w-full">
+        {/* Sub-header Navigation with Tabs */}
+        <div className="flex flex-col sm:flex-row sm:items-end justify-between border-b border-border-default pb-0 gap-4">
+          <TabsList className="border-b-0">
+            <TabsTrigger value="spatial">{t.spatialZonesTab}</TabsTrigger>
+            <TabsTrigger value="attributes">{t.visualAttributesTab}</TabsTrigger>
+          </TabsList>
 
-      {subTab === 'attributes' && <div className="cyber-card p-6 space-y-6 max-w-2xl"><div><h3 className="text-lg font-bold font-mono text-slate-100">{t.visualTitle}</h3><p className="text-xs text-sky-300/80 font-mono mt-1">{t.visualSub}</p></div><div className="space-y-4 font-mono"><div className="flex justify-between items-center bg-[#071120] p-3 rounded-lg border border-sky-500/30"><span className="text-sm text-slate-300">{t.femaleLabel}</span><span className="text-xl font-bold text-cyan-400">{analytics.visual_presentation.female_presenting}</span></div><div className="flex justify-between items-center bg-[#071120] p-3 rounded-lg border border-sky-500/30"><span className="text-sm text-slate-300">{t.maleLabel}</span><span className="text-xl font-bold text-cyan-400">{analytics.visual_presentation.male_presenting}</span></div><div className="flex justify-between items-center bg-[#071120] p-3 rounded-lg border border-amber-500/40"><span className="text-sm text-amber-400 flex items-center gap-1.5 font-bold"><HelpCircle className="w-4 h-4" />{t.unknownLabel}</span><span className="text-xl font-bold text-amber-400">{analytics.visual_presentation.unknown}</span></div><div className="flex justify-between items-center pt-2 text-xs text-sky-300"><span>{t.coveragePct}</span><span className="text-emerald-400 font-bold text-sm">{analytics.visual_presentation.coverage_pct}%</span></div></div></div>}
+          <div className="font-mono text-xs text-text-muted flex items-center gap-1.5 pb-3">
+            <Clock className="w-3.5 h-3.5" />
+            <span>{t.dataSnapshot}</span>
+          </div>
+        </div>
+
+        {/* Spatial Tab Content */}
+        <TabsContent value="spatial" className="space-y-8 mt-8">
+          {/* Main Grid: Heatmap (8 cols) + Zone Distribution (4 cols) */}
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
+            {/* Left: Density Heatmap Panel (8 cols) */}
+            <section className="lg:col-span-8 flex flex-col bg-surface-primary border border-border-default rounded-lg overflow-hidden">
+              {/* Header */}
+              <header className="flex justify-between items-center p-5 border-b border-border-default bg-surface-elevated/40">
+                <div>
+                  <h2 className="text-base font-semibold text-text-primary">{t.densityHeatmap}</h2>
+                  <p className="text-xs text-text-muted mt-0.5">{t.spatialSub}</p>
+                </div>
+                <Badge variant="secondary" className="font-mono gap-1">
+                  <Grid3X3 className="w-3 h-3" />
+                  <span>{t.grid} {heatmapGridSize.length === 2 ? `${heatmapGridSize[0]}×${heatmapGridSize[1]}` : '—'}</span>
+                </Badge>
+              </header>
+
+              {/* Heatmap Canvas */}
+              <div className="flex-1 relative bg-surface-container-lowest min-h-[340px] sm:min-h-[400px] flex items-center justify-center p-6 overflow-hidden">
+                {/* Background grid */}
+                <div className="absolute inset-0 grid-pattern opacity-20 pointer-events-none" />
+
+                {/* Room Boundary Box */}
+                <div className="absolute inset-6 sm:inset-10 border border-border-strong/40 rounded-sm pointer-events-none flex flex-col justify-between p-4">
+                  {/* Top instruction zone indicator */}
+                  <div className="border-b border-dashed border-border-strong/40 pb-2">
+                    <span className="font-mono text-[10px] text-text-muted uppercase tracking-widest">
+                      {t.frontLectern}
+                    </span>
+                  </div>
+
+                  {/* Bottom entrance indicator */}
+                  <div className="border-t border-dashed border-border-strong/40 pt-2 text-center">
+                    <span className="font-mono text-[10px] text-text-muted uppercase tracking-widest">
+                      {t.rearDoor}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Real Heatmap Matrix Render */}
+                {heatmapValues.length > 0 ? (
+                  <div className="relative z-10 w-full max-w-lg p-4">
+                    <div
+                      className="grid gap-1"
+                      style={{
+                        gridTemplateColumns: `repeat(${heatmapValues[0]?.length || 1}, minmax(0, 1fr))`,
+                      }}
+                    >
+                      {heatmapValues.flatMap((row, rIdx) =>
+                        row.map((value, cIdx) => {
+                          const intensity =
+                            heatmapMax > 0 ? Math.min(1, (Number(value) || 0) / heatmapMax) : 0;
+                          return (
+                            <div
+                              key={`${rIdx}-${cIdx}`}
+                              title={`Value: ${Number(value || 0).toFixed(2)}`}
+                              className="aspect-square rounded-sm transition-opacity"
+                              style={{
+                                backgroundColor:
+                                  intensity > 0
+                                    ? `rgba(56, 189, 248, ${0.15 + intensity * 0.8})`
+                                    : 'rgba(30, 41, 59, 0.25)',
+                              }}
+                            />
+                          );
+                        })
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="relative z-10 text-center py-16">
+                    <p className="text-xs font-mono text-text-muted">
+                      Waiting for confirmed tracks to render real spatial density map.
+                    </p>
+                  </div>
+                )}
+              </div>
+
+              {/* Heatmap Legend */}
+              <footer className="p-3.5 border-t border-border-default bg-surface-secondary flex items-center justify-between">
+                <span className="font-mono text-[11px] text-text-muted uppercase tracking-wider">
+                  {t.densityInterpolation}
+                </span>
+                <div className="flex items-center gap-3">
+                  <span className="font-mono text-xs text-text-muted">{t.low}</span>
+                  <div className="w-36 h-2 rounded-full overflow-hidden flex bg-surface-primary border border-border-default/50">
+                    <div className="h-full flex-1 bg-primary/30" />
+                    <div className="h-full flex-1 bg-primary/70" />
+                    <div className="h-full flex-1 bg-tertiary-container" />
+                  </div>
+                  <span className="font-mono text-xs text-text-muted">{t.high}</span>
+                </div>
+              </footer>
+            </section>
+
+            {/* Right: Zone Distribution Panel (4 cols) */}
+            <aside className="lg:col-span-4 bg-surface-secondary border border-border-default rounded-lg p-6 flex flex-col justify-between gap-6">
+              <div>
+                <header className="mb-6">
+                  <h3 className="text-base font-semibold text-text-primary">{t.zoneDistribution}</h3>
+                  <p className="text-xs text-text-muted mt-0.5">{t.currentOccupancyByArea}</p>
+                </header>
+
+                {zoneRows.length > 0 ? (
+                  <div className="space-y-6">
+                    {zoneRows.map((zone, index) => {
+                      const colors = ['bg-tertiary-container', 'bg-primary', 'bg-secondary'];
+                      return (
+                        <div key={zone.name}>
+                          <div className="flex justify-between items-baseline mb-2 text-xs">
+                            <span className="text-text-primary font-medium">{zone.name}</span>
+                            <span className="font-mono text-base font-semibold text-text-primary">
+                              {zone.peopleCount}
+                            </span>
+                          </div>
+                          <div className="w-full bg-surface-primary h-1.5 rounded-full overflow-hidden">
+                            <div
+                              className={`${colors[index % colors.length]} h-full rounded-full transition-all duration-300`}
+                              style={{ width: `${Math.min(100, Math.max(0, zone.percentage))}%` }}
+                            />
+                          </div>
+                          <div className="mt-1 text-[11px] text-text-muted font-mono">
+                            {zone.percentage}% · {zone.density == null ? '—' : `${zone.density.toFixed(2)} /m²`}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <p className="text-xs text-text-muted font-mono leading-relaxed">
+                    {t.noConfiguredZones}
+                  </p>
+                )}
+              </div>
+
+              {/* Total Headcount */}
+              <div className="pt-6 border-t border-border-default flex justify-between items-baseline">
+                <span className="text-xs font-semibold text-text-muted uppercase tracking-wider">
+                  {t.totalHeadcount}
+                </span>
+                <span className="text-4xl font-semibold text-text-primary font-mono">
+                  {analytics.total_crowd}
+                </span>
+              </div>
+            </aside>
+          </div>
+
+          {/* Zone Performance Table */}
+          {zoneRows.length > 0 && (
+            <div className="bg-surface-primary border border-border-default rounded-lg p-5">
+              <h3 className="text-sm font-semibold text-text-primary mb-4">
+                {t.zoneMetricsTitle}
+              </h3>
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs font-mono">
+                  <thead className="bg-surface-secondary text-text-muted uppercase tracking-wider border-b border-border-default">
+                    <tr>
+                      <th className="px-4 py-3 font-medium">{t.zoneHeader}</th>
+                      <th className="px-4 py-3 font-medium">{t.peopleHeader}</th>
+                      <th className="px-4 py-3 font-medium">{t.densityHeader}</th>
+                      <th className="px-4 py-3 font-medium">{t.dwellHeader}</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border-default text-text-primary">
+                    {zoneRows.map((zone) => (
+                      <tr key={zone.name} className="hover:bg-surface-secondary/50 transition-colors">
+                        <td className="px-4 py-3 font-semibold text-primary">{zone.name}</td>
+                        <td className="px-4 py-3">{zone.peopleCount}</td>
+                        <td className="px-4 py-3">
+                          {zone.density == null ? '—' : `${zone.density.toFixed(2)} /m²`}
+                        </td>
+                        <td className="px-4 py-3 text-text-muted">{zone.avgDwellTime}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </TabsContent>
+
+        {/* Attributes Tab Content */}
+        <TabsContent value="attributes" className="mt-8">
+          <div className="bg-surface-primary border border-border-default rounded-lg p-6 max-w-xl space-y-6">
+            <div>
+              <h3 className="text-base font-semibold text-text-primary">{t.visualTitle}</h3>
+              <p className="text-xs text-text-muted mt-1">{t.visualSub}</p>
+            </div>
+
+            <div className="space-y-3 font-mono text-xs">
+              <div className="flex justify-between items-center bg-surface-secondary p-3.5 rounded border border-border-default">
+                <span className="text-text-muted">{t.femaleLabel}</span>
+                <span className="text-lg font-semibold text-text-primary">
+                  {analytics.visual_presentation.female_presenting}
+                </span>
+              </div>
+
+              <div className="flex justify-between items-center bg-surface-secondary p-3.5 rounded border border-border-default">
+                <span className="text-text-muted">{t.maleLabel}</span>
+                <span className="text-lg font-semibold text-text-primary">
+                  {analytics.visual_presentation.male_presenting}
+                </span>
+              </div>
+
+              <div className="flex justify-between items-center bg-surface-secondary p-3.5 rounded border border-border-default">
+                <span className="text-text-muted flex items-center gap-1.5">
+                  <HelpCircle className="w-3.5 h-3.5" />
+                  {t.unknownLabel}
+                </span>
+                <span className="text-lg font-semibold text-text-muted">
+                  {analytics.visual_presentation.unknown}
+                </span>
+              </div>
+
+              <div className="flex justify-between items-center pt-3 border-t border-border-default text-xs">
+                <span className="text-text-muted">{t.coveragePct}</span>
+                <span className="text-primary font-semibold">
+                  {analytics.visual_presentation.coverage_pct}%
+                </span>
+              </div>
+            </div>
+          </div>
+        </TabsContent>
+      </Tabs>
     </div>
   );
 };

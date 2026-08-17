@@ -25,7 +25,7 @@ export interface PersonDetection {
 export interface ZoneData {
   name: string;
   peopleCount: number;
-  density: number; // people/m2
+  density: number | null; // people/m2 when the zone has an area calibration
   avgDwellTime: string; // e.g. "14m 02s"
   percentage: number;
 }

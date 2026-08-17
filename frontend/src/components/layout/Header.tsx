@@ -1,10 +1,15 @@
 import React from 'react';
-import { Radio, Clock, ShieldCheck, Globe } from 'lucide-react';
-import type { Language } from '../../i18n/translations';
-import type { ApiAvailability } from '../../api/contracts';
+import { Bell, Globe } from 'lucide-react';
+import type { Language } from '@/i18n/translations';
+import type { ApiAvailability } from '@/api/contracts';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 
 interface HeaderProps {
-  sessionDuration: string;
   lang: Language;
   onToggleLanguage: () => void;
   t: any;
@@ -13,76 +18,84 @@ interface HeaderProps {
 }
 
 export const Header: React.FC<HeaderProps> = ({
-  sessionDuration,
   lang,
   onToggleLanguage,
   t,
   isLive = false,
   apiStatus,
 }) => {
-  const apiStatusLabel: Record<ApiAvailability, string> = {
-    checking: 'API Checking',
-    ready: 'API Ready',
-    not_ready: 'API Not Ready',
-    offline: 'API Offline',
-  };
-  const apiStatusClass: Record<ApiAvailability, string> = {
-    checking: 'text-amber-300',
-    ready: 'text-emerald-400',
-    not_ready: 'text-amber-300',
-    offline: 'text-rose-400',
-  };
+  const statusLabel = isLive
+    ? t.liveStatus
+    : apiStatus === 'offline'
+      ? t.serviceOffline
+      : apiStatus === 'not_ready'
+        ? t.serviceNotReady
+        : apiStatus === 'checking'
+          ? t.serviceChecking
+          : t.systemReady;
+  const statusColor = isLive
+    ? 'bg-success animate-pulse'
+    : apiStatus === 'offline'
+      ? 'bg-danger'
+      : apiStatus === 'not_ready' || apiStatus === 'checking'
+        ? 'bg-warning'
+        : 'bg-success';
 
   return (
-    <header className="min-h-[64px] py-2 md:py-0 bg-[#0b172a]/95 backdrop-blur-md border-b border-sky-500/40 px-3 sm:px-6 flex flex-wrap md:flex-nowrap items-center justify-between sticky top-0 z-50 shadow-xl gap-2">
-      {/* Brand & Title - Cyber Frame Style */}
-      <div className="flex items-center space-x-2 sm:space-x-3">
-        <div className="w-8 h-8 sm:w-10 sm:h-10 rounded-lg bg-sky-500/15 border border-cyan-400/50 flex items-center justify-center text-cyan-400 shadow-md shadow-cyan-500/20 shrink-0">
-          <Radio className="w-4 h-4 sm:w-5 sm:h-5 animate-pulse text-cyan-400" />
-        </div>
-        <div>
-          <h1 className="text-xs sm:text-base font-bold text-slate-100 tracking-wide flex items-center gap-1.5 font-mono">
-            <span>{t.brandTitle}</span>
-            <span className="hidden xs:inline-block text-[9px] uppercase tracking-widest px-1.5 py-0.5 rounded bg-cyan-400/15 text-cyan-300 border border-cyan-400/30">
-              CYBER FRAME
-            </span>
-          </h1>
-          <p className="hidden sm:block text-xs text-sky-300/70">{t.brandSub}</p>
+    <header className="h-16 bg-app-bg border-b border-border-default flex justify-between items-center px-4 sm:px-8 sticky top-0 z-40 shrink-0">
+      {/* Left: Active Room Context */}
+      <div className="flex items-center gap-6 h-full">
+        <div className="flex items-center h-full text-text-primary font-semibold text-base">
+          {t.classroomA}
         </div>
       </div>
 
-      {/* Center: Live Status */}
-      <div className="flex items-center space-x-2">
-        {isLive && (
-          <div className="flex items-center space-x-1.5 bg-emerald-500/15 border border-emerald-400/40 px-2 sm:px-3 py-1 sm:py-1.5 rounded-lg text-emerald-300 text-[11px] sm:text-xs font-mono font-bold shadow-sm shadow-emerald-500/20">
-            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping" />
-            <span className="hidden xs:inline">{t.liveStreamBadge}</span>
-            <span className="xs:hidden">LIVE</span>
-          </div>
-        )}
-      </div>
-
-      {/* Right: Language Switcher & Session Timer */}
-      <div className="flex items-center space-x-2 sm:space-x-4">
-        {/* Bilingual Switcher Button */}
-        <button
-          onClick={onToggleLanguage}
-          className="px-2 sm:px-3 py-1 sm:py-1.5 rounded-lg bg-[#091526] border border-sky-500/40 text-cyan-300 hover:border-cyan-400 hover:scale-105 active:scale-95 transition-all text-xs font-mono font-bold flex items-center gap-1 cursor-pointer shadow-sm"
-          title="Switch Language / Đổi Ngôn Ngữ"
-        >
-          <Globe className="w-3.5 h-3.5 text-cyan-400" />
-          <span className="hidden sm:inline">{lang === 'vi' ? '🇻🇳 Tiếng Việt' : '🇬🇧 English'}</span>
-          <span className="sm:hidden">{lang === 'vi' ? '🇻🇳 VI' : '🇬🇧 EN'}</span>
-        </button>
-
-        <div className="hidden sm:flex items-center space-x-2 text-xs font-mono text-cyan-300 bg-[#091526] border border-sky-500/30 px-3 py-1.5 rounded-lg shadow-sm">
-          <Clock className="w-3.5 h-3.5 text-cyan-400" />
-          <span>{t.sessionTime} {sessionDuration}</span>
+      {/* Right: Actions & Status */}
+      <div className="flex items-center gap-4 sm:gap-6">
+        {/* Live Status Indicator */}
+        <div className="flex items-center gap-2">
+          <span className={`w-2 h-2 rounded-full ${statusColor}`} />
+          <span className="text-xs font-semibold text-text-primary uppercase tracking-wider">
+            {statusLabel}
+          </span>
         </div>
 
-        <div className="hidden md:flex items-center space-x-1.5 text-xs text-slate-300 font-mono">
-          <ShieldCheck className={`w-4 h-4 ${apiStatusClass[apiStatus]}`} />
-          <span className={apiStatusClass[apiStatus]}>{apiStatusLabel[apiStatus]}</span>
+        {/* Language Switcher Dropdown */}
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button className="flex items-center gap-1 text-xs font-semibold uppercase text-text-muted hover:text-text-primary transition-colors cursor-pointer outline-none">
+              <Globe className="w-3.5 h-3.5" />
+              <span>{lang === 'vi' ? 'Tiếng Việt' : 'English'}</span>
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem
+              onClick={() => {
+                if (lang !== 'vi') onToggleLanguage();
+              }}
+              className={lang === 'vi' ? 'text-primary font-semibold' : ''}
+            >
+              Tiếng Việt (VN)
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onClick={() => {
+                if (lang !== 'en') onToggleLanguage();
+              }}
+              className={lang === 'en' ? 'text-primary font-semibold' : ''}
+            >
+              English (EN)
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+
+        {/* Action Icons */}
+        <div className="flex items-center gap-3 sm:gap-4 border-l border-border-default pl-4 sm:pl-6">
+          <button
+            className="text-text-muted hover:text-text-primary transition-colors cursor-pointer active:scale-95"
+            title="Notifications"
+          >
+            <Bell className="w-4 h-4" />
+          </button>
         </div>
       </div>
     </header>

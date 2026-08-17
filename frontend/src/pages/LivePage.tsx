@@ -1,14 +1,59 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { Camera, Layers, Play, Pause, Settings, RefreshCw, CheckSquare, Square, AlertCircle, UserCheck, Crosshair } from 'lucide-react';
-import type { LabelMode, OverlayOptions, AnalyticsData } from '../types/analytics';
-import type { FrameOverlay, OverlaySeat, OverlayTrack, OverlayZone, SessionStatsResponse } from '../api/contracts';
-import { CrowdApiError, createSessionMetadataSocket, createSession, createWebRTCOffer, deleteSession, getApiErrorMessage, getWarmupStatus, resetSession, startWarmup, submitFrame } from '../api/crowdApi';
+import {
+  Camera,
+  Play,
+  Pause,
+  RefreshCw,
+  AlertCircle,
+  UserCheck,
+  ChevronDown,
+  Layers,
+  Crop,
+  Badge as BadgeIcon,
+  Users,
+  ArrowDownUp,
+  ArrowDown,
+  ArrowUp,
+  Grid,
+  Armchair,
+} from 'lucide-react';
+import type { LabelMode, OverlayOptions, AnalyticsData } from '@/types/analytics';
+import type {
+  ApiErrorDetail,
+  FrameOverlay,
+  OverlaySeat,
+  OverlayTrack,
+  OverlayZone,
+  SessionStatsResponse,
+  WebRTCOfferResponse,
+} from '@/api/contracts';
+import {
+  CrowdApiError,
+  createSession,
+  createWebRTCSessionSocket,
+  deleteSession,
+  getApiErrorMessage,
+  getWarmupStatus,
+  resetSession,
+  startWarmup,
+  submitFrame,
+} from '@/api/crowdApi';
+import { Button } from '@/components/ui/button';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuCheckboxItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 
 interface LivePageProps {
   analytics: AnalyticsData;
   onAnalyticsUpdate: (stats: any) => void;
   onTelemetryUpdate?: (telemetry: Record<string, any>) => void;
   t: any;
+  isVisible?: boolean;
   onStreamingChange?: (active: boolean) => void;
   onSessionChange?: (sessionId: string | null) => void;
 }
@@ -43,11 +88,20 @@ const EMPTY_OVERLAY: OverlayRenderData = {
 const LIVE_MODE = 'classroom_demo' as const;
 const CAMERA_PERMISSION_TIMEOUT_MS = 20_000;
 
+type WebRTCLifecycleEvent =
+  | { event: 'answer'; answer: WebRTCOfferResponse }
+  | { event: 'metadata'; data: SessionStatsResponse }
+  | { event: 'error'; error: ApiErrorDetail };
+
+const longTermPersonLabel = (track: OverlayTrack): string | null => {
+  const backendLabel = track.person_label?.trim();
+  if (backendLabel) return backendLabel;
+  if (!Number.isInteger(track.person_id) || (track.person_id ?? -1) < 0) return null;
+  return `P${String(track.person_id).padStart(4, '0')}`;
+};
+
 type WarmupSnapshot = Awaited<ReturnType<typeof getWarmupStatus>>;
 
-// Older API workers returned only {status: "ready"}. Keep the client
-// compatible during a rolling restart while preferring the explicit staged
-// flags from the current contract.
 const trackerReadyFromStatus = (status: WarmupSnapshot): boolean =>
   status.tracker_ready ?? ['tracking_ready', 'ready', 'in_use'].includes(status.status);
 
@@ -61,7 +115,9 @@ type CameraRequestError = Error & { code?: string };
 
 async function requestCameraWithTimeout(constraints: MediaStreamConstraints): Promise<MediaStream> {
   if (!navigator.mediaDevices?.getUserMedia) {
-    const error: CameraRequestError = new Error('Camera is unavailable in this browser context. Open the app on HTTPS or localhost and allow camera access.');
+    const error: CameraRequestError = new Error(
+      'Camera is unavailable in this browser context. Open the app on HTTPS or localhost and allow camera access.'
+    );
     error.code = 'camera_unavailable';
     throw error;
   }
@@ -70,7 +126,9 @@ async function requestCameraWithTimeout(constraints: MediaStreamConstraints): Pr
   const cameraPromise = navigator.mediaDevices.getUserMedia(constraints).then((stream) => {
     if (timedOut) {
       stream.getTracks().forEach((track) => track.stop());
-      const error: CameraRequestError = new Error('Camera permission request timed out. Check browser camera permission and close any hidden prompt.');
+      const error: CameraRequestError = new Error(
+        'Camera permission request timed out. Check browser camera permission and close any hidden prompt.'
+      );
       error.code = 'camera_permission_timeout';
       throw error;
     }
@@ -79,7 +137,9 @@ async function requestCameraWithTimeout(constraints: MediaStreamConstraints): Pr
   const timeoutPromise = new Promise<MediaStream>((_, reject) => {
     timeoutId = window.setTimeout(() => {
       timedOut = true;
-      const error: CameraRequestError = new Error('Camera permission request timed out. Check browser camera permission and close any hidden prompt.');
+      const error: CameraRequestError = new Error(
+        'Camera permission request timed out. Check browser camera permission and close any hidden prompt.'
+      );
       error.code = 'camera_permission_timeout';
       reject(error);
     }, CAMERA_PERMISSION_TIMEOUT_MS);
@@ -91,7 +151,15 @@ async function requestCameraWithTimeout(constraints: MediaStreamConstraints): Pr
   }
 }
 
-export const LivePage: React.FC<LivePageProps> = ({ analytics, onAnalyticsUpdate, onTelemetryUpdate, t, onStreamingChange, onSessionChange }) => {
+export const LivePage: React.FC<LivePageProps> = ({
+  analytics,
+  onAnalyticsUpdate,
+  onTelemetryUpdate,
+  t,
+  isVisible = true,
+  onStreamingChange,
+  onSessionChange,
+}) => {
   const [labelMode, setLabelMode] = useState<LabelMode>('minimal');
   const [isStreaming, setIsStreaming] = useState(false);
   const [isCameraLive, setIsCameraLive] = useState(false);
@@ -110,10 +178,10 @@ export const LivePage: React.FC<LivePageProps> = ({ analytics, onAnalyticsUpdate
   const [overlays, setOverlays] = useState<OverlayOptions>({
     boxes: true,
     ids: true,
-    attributes: true,
+    attributes: false,
     motion: false,
-    zones: true,
-    seats: true,
+    zones: false,
+    seats: false,
     trajectory: false,
   });
 
@@ -155,12 +223,15 @@ export const LivePage: React.FC<LivePageProps> = ({ analytics, onAnalyticsUpdate
 
   const applyMetadataStats = (response: SessionStatsResponse) => {
     const resultSequence = response.frame?.sequence;
-    if (resultSequence == null || (lastResultSequenceRef.current != null && resultSequence <= lastResultSequenceRef.current)) {
+    if (
+      resultSequence == null ||
+      (lastResultSequenceRef.current != null && resultSequence <= lastResultSequenceRef.current)
+    ) {
       return;
     }
     lastResultSequenceRef.current = resultSequence;
-    const analytics = response.analytics;
-    const overlay = (analytics?.overlay ?? {}) as FrameOverlay;
+    const analyticsPayload = response.analytics;
+    const overlay = (analyticsPayload?.overlay ?? {}) as FrameOverlay;
     const currentTracks = overlay.tracks ?? [];
     latestTracksRef.current = currentTracks;
     setOverlayData({
@@ -177,57 +248,12 @@ export const LivePage: React.FC<LivePageProps> = ({ analytics, onAnalyticsUpdate
       }
       onTelemetryUpdate?.({
         live_stream: liveStreamTelemetry,
-        runtime: analytics?.runtime,
+        runtime: analyticsPayload?.runtime,
         camera_fps: cameraFpsRef.current,
       });
     }
-    if (analytics) onAnalyticsUpdate(analytics);
+    if (analyticsPayload) onAnalyticsUpdate(analyticsPayload);
   };
-
-  const startMetadataSocket = (session: string): Promise<void> => new Promise((resolve, reject) => {
-    const socket = createSessionMetadataSocket(session);
-    metadataSocketRef.current = socket;
-    let settled = false;
-    const timeoutId = window.setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      socket.close();
-      reject(new Error('Metadata WebSocket did not connect in time.'));
-    }, 5_000);
-
-    socket.onopen = () => {
-      if (!settled) {
-        settled = true;
-        window.clearTimeout(timeoutId);
-        resolve();
-      }
-    };
-    socket.onmessage = (event) => {
-      if (activeSessionIdRef.current !== session) return;
-      try {
-        const response = JSON.parse(String(event.data)) as SessionStatsResponse;
-        applyMetadataStats(response);
-      } catch {
-      }
-    };
-    socket.onerror = () => {
-      if (!settled) {
-        settled = true;
-        window.clearTimeout(timeoutId);
-        reject(new Error('Metadata WebSocket connection failed.'));
-        return;
-      }
-    };
-    socket.onclose = () => {
-      if (!settled) {
-        settled = true;
-        window.clearTimeout(timeoutId);
-        reject(new Error('Metadata WebSocket closed before connecting.'));
-      } else if (activeSessionIdRef.current === session && !isStartingRef.current) {
-        stopStream();
-      }
-    };
-  });
 
   const waitForIceGathering = async (peer: RTCPeerConnection): Promise<void> => {
     if (peer.iceGatheringState === 'complete') return;
@@ -322,8 +348,6 @@ export const LivePage: React.FC<LivePageProps> = ({ analytics, onAnalyticsUpdate
       throw new Error('WebRTC is not supported by this browser.');
     }
     const peer = new RTCPeerConnection({
-      // Keep browser-side candidate gathering aligned with the aiortc
-      // default.  A TURN relay is still required for restrictive NATs.
       iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
     });
     webRtcPeerRef.current = peer;
@@ -332,8 +356,8 @@ export const LivePage: React.FC<LivePageProps> = ({ analytics, onAnalyticsUpdate
     });
     peer.onconnectionstatechange = () => {
       if (
-        activeSessionIdRef.current
-        && (peer.connectionState === 'failed' || peer.connectionState === 'closed')
+        activeSessionIdRef.current &&
+        (peer.connectionState === 'failed' || peer.connectionState === 'closed')
       ) {
         stopStream();
       }
@@ -343,16 +367,83 @@ export const LivePage: React.FC<LivePageProps> = ({ analytics, onAnalyticsUpdate
     await waitForIceGathering(peer);
     const localDescription = peer.localDescription;
     if (!localDescription?.sdp) throw new Error('The browser did not produce a usable WebRTC offer.');
-    const answer = await createWebRTCOffer(localDescription.sdp, 'offer', LIVE_MODE);
-    activeSessionIdRef.current = answer.session_id;
-    lastResultSequenceRef.current = null;
-    setSessionId(answer.session_id);
-    onSessionChangeRef.current?.(answer.session_id);
-    await peer.setRemoteDescription({ type: answer.type, sdp: answer.sdp });
-    await startMetadataSocket(answer.session_id);
-    setActiveTransport('webrtc');
-    setIsStreaming(true);
-    onStreamingChange?.(true);
+    const socket = createWebRTCSessionSocket();
+    metadataSocketRef.current = socket;
+
+    await new Promise<void>((resolve, reject) => {
+      let negotiated = false;
+      let settled = false;
+      const finishWithError = (error: Error) => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timeoutId);
+        reject(error);
+      };
+      const timeoutId = window.setTimeout(() => {
+        socket.close();
+        finishWithError(new Error('WebRTC signaling timed out.'));
+      }, 20_000);
+
+      socket.onopen = () => {
+        socket.send(JSON.stringify({
+          sdp: localDescription.sdp,
+          type: 'offer',
+          mode: LIVE_MODE,
+        }));
+      };
+      socket.onmessage = (event) => {
+        let message: WebRTCLifecycleEvent;
+        try {
+          message = JSON.parse(String(event.data)) as WebRTCLifecycleEvent;
+        } catch {
+          return;
+        }
+        if (message.event === 'metadata') {
+          applyMetadataStats(message.data);
+          return;
+        }
+        if (message.event === 'error') {
+          finishWithError(new Error(message.error.message || 'WebRTC signaling failed.'));
+          return;
+        }
+        if (message.event !== 'answer' || settled) return;
+        const answer = message.answer;
+        activeSessionIdRef.current = answer.session_id;
+        lastResultSequenceRef.current = null;
+        setSessionId(answer.session_id);
+        onSessionChangeRef.current?.(answer.session_id);
+        void peer
+          .setRemoteDescription({ type: answer.type, sdp: answer.sdp })
+          .then(() => {
+            if (settled) return;
+            negotiated = true;
+            settled = true;
+            window.clearTimeout(timeoutId);
+            setActiveTransport('webrtc');
+            setIsStreaming(true);
+            onStreamingChangeRef.current?.(true);
+            resolve();
+          })
+          .catch((error: unknown) => {
+            finishWithError(error instanceof Error ? error : new Error('Invalid WebRTC answer.'));
+          });
+      };
+      socket.onerror = () => {
+        if (!negotiated) finishWithError(new Error('WebRTC signaling connection failed.'));
+      };
+      socket.onclose = () => {
+        if (!negotiated) {
+          finishWithError(new Error('WebRTC signaling closed before negotiation completed.'));
+          return;
+        }
+        if (metadataSocketRef.current === socket && activeSessionIdRef.current) {
+          metadataSocketRef.current = null;
+          // This socket owns the serverless peer lifetime. Do not silently
+          // switch a dropped WebRTC session into continuous HTTP uploads.
+          stopStream();
+        }
+      };
+    });
   };
 
   const startStream = async () => {
@@ -362,11 +453,15 @@ export const LivePage: React.FC<LivePageProps> = ({ analytics, onAnalyticsUpdate
     setErrorMessage(null);
     try {
       const trackingReadyPromise = waitForTrackingReady();
-      setWarmupStatus((previous) => previous ? {
-        ...previous,
-        stage: 'camera_permission',
-        message: t.cameraPermission,
-      } : previous);
+      setWarmupStatus((previous) =>
+        previous
+          ? {
+              ...previous,
+              stage: 'camera_permission',
+              message: t.cameraPermission,
+            }
+          : previous
+      );
       let mediaStream: MediaStream;
       try {
         const constraints = {
@@ -375,10 +470,9 @@ export const LivePage: React.FC<LivePageProps> = ({ analytics, onAnalyticsUpdate
         };
         mediaStream = await requestCameraWithTimeout(constraints);
       } catch (e) {
-        if (['camera_permission_timeout', 'camera_unavailable'].includes((e as CameraRequestError)?.code || '')) {
-          // The browser cannot cancel an in-flight getUserMedia prompt. Abort
-          // the polling side and consume its eventual rejection so a denied
-          // camera does not leave an unhandled warm-up promise behind.
+        if (
+          ['camera_permission_timeout', 'camera_unavailable'].includes((e as CameraRequestError)?.code || '')
+        ) {
           warmupAbortControllerRef.current?.abort();
           void trackingReadyPromise.catch(() => undefined);
           throw e;
@@ -387,9 +481,6 @@ export const LivePage: React.FC<LivePageProps> = ({ analytics, onAnalyticsUpdate
         mediaStream = await requestCameraWithTimeout({ video: true, audio: false });
       }
 
-      // Stop can be pressed while the browser permission prompt is open. Do
-      // not resurrect a stream after that cancellation has already cleared
-      // the startup ref.
       if (!isStartingRef.current) {
         mediaStream.getTracks().forEach((track) => track.stop());
         return;
@@ -403,29 +494,39 @@ export const LivePage: React.FC<LivePageProps> = ({ analytics, onAnalyticsUpdate
         await videoRef.current.play();
       }
 
-      setWarmupStatus((previous) => previous ? {
-        ...previous,
-        stage: trackerReadyFromStatus(previous) ? 'session_starting' : 'camera_connected',
-        message: trackerReadyFromStatus(previous) ? t.sessionStarting : t.cameraConnected,
-      } : previous);
+      setWarmupStatus((previous) =>
+        previous
+          ? {
+              ...previous,
+              stage: trackerReadyFromStatus(previous) ? 'session_starting' : 'camera_connected',
+              message: trackerReadyFromStatus(previous) ? t.sessionStarting : t.cameraConnected,
+            }
+          : previous
+      );
 
       await trackingReadyPromise;
 
-      setWarmupStatus((previous) => previous ? {
-        ...previous,
-        stage: 'session_starting',
-        message: t.sessionStarting,
-      } : previous);
+      setWarmupStatus((previous) =>
+        previous
+          ? {
+              ...previous,
+              stage: 'session_starting',
+              message: t.sessionStarting,
+            }
+          : previous
+      );
 
       try {
         await startWebRTCSession(mediaStream);
-      } catch {
+      } catch (webRtcError) {
+        console.warn('[LivePage] WebRTC negotiation failed; enabling bounded HTTP fallback:', webRtcError);
         await cleanupWebRTCSession();
         if (videoRef.current) {
           videoRef.current.srcObject = mediaStream;
           await videoRef.current.play();
         }
         await startHttpSession();
+        setErrorMessage('WebRTC negotiation failed. HTTP frame fallback is active for this session.');
       }
     } catch (err: any) {
       console.error('Camera stream error:', err);
@@ -506,7 +607,7 @@ export const LivePage: React.FC<LivePageProps> = ({ analytics, onAnalyticsUpdate
         setOverlayData(EMPTY_OVERLAY);
         setSelectedPerson(null);
       } catch (error: unknown) {
-        setErrorMessage(getApiErrorMessage(error, 'Unable to reset the AI session.'));
+        setErrorMessage(getApiErrorMessage(error, 'Unable to reset the session.'));
       }
     }
   };
@@ -569,14 +670,15 @@ export const LivePage: React.FC<LivePageProps> = ({ analytics, onAnalyticsUpdate
                 currentSessionId,
                 blob,
                 lastResultSequenceRef.current ?? undefined,
-                frameAbortController.signal,
+                frameAbortController.signal
               );
               const roundtripLatency = Math.round(performance.now() - sendTime);
               setLatencyMs(roundtripLatency);
 
               const resultSequence = res.result_sequence;
-              const isNewResult = resultSequence != null
-                && (lastResultSequenceRef.current == null || resultSequence > lastResultSequenceRef.current);
+              const isNewResult =
+                resultSequence != null &&
+                (lastResultSequenceRef.current == null || resultSequence > lastResultSequenceRef.current);
               if (isNewResult && resultSequence != null) {
                 lastResultSequenceRef.current = resultSequence;
                 const overlay = (res.overlay ?? {}) as FrameOverlay;
@@ -589,8 +691,8 @@ export const LivePage: React.FC<LivePageProps> = ({ analytics, onAnalyticsUpdate
                   seats: overlay.seats ?? [],
                 });
 
-                const analytics = res.analytics;
-                const liveStreamTelemetry = analytics?.runtime?.live_stream;
+                const analyticsPayload = res.analytics;
+                const liveStreamTelemetry = analyticsPayload?.runtime?.live_stream;
                 if (liveStreamTelemetry) {
                   const cadenceMs = liveStreamTelemetry.configured_cadence_ms;
                   if (typeof cadenceMs === 'number' && cadenceMs > 0) {
@@ -599,11 +701,11 @@ export const LivePage: React.FC<LivePageProps> = ({ analytics, onAnalyticsUpdate
                   }
                   onTelemetryUpdate?.({
                     ...liveStreamTelemetry,
-                    runtime: analytics?.runtime,
+                    runtime: analyticsPayload?.runtime,
                     camera_fps: cameraFpsRef.current,
                   });
                 }
-                if (analytics) onAnalyticsUpdate(analytics);
+                if (analyticsPayload) onAnalyticsUpdate(analyticsPayload);
               }
             } catch (err) {
               if (err instanceof CrowdApiError && err.status === 404) {
@@ -643,7 +745,7 @@ export const LivePage: React.FC<LivePageProps> = ({ analytics, onAnalyticsUpdate
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.lineJoin = 'round';
     ctx.lineCap = 'round';
-    ctx.font = `${Math.max(11, Math.round(canvas.width / 70))}px ui-monospace, SFMono-Regular, Menlo, monospace`;
+    ctx.font = '500 11px Inter, sans-serif';
 
     const drawPolygon = (polygon: Array<[number, number]>, stroke: string, fill?: string) => {
       if (polygon.length < 2) return;
@@ -658,14 +760,14 @@ export const LivePage: React.FC<LivePageProps> = ({ analytics, onAnalyticsUpdate
         ctx.fill();
       }
       ctx.strokeStyle = stroke;
-      ctx.lineWidth = Math.max(1, canvas.width / 480);
+      ctx.lineWidth = 1.5;
       ctx.stroke();
     };
 
     if (overlays.zones) {
       overlayData.zones.forEach((zone, index) => {
-        const color = ['#22d3ee', '#38bdf8', '#a78bfa', '#f59e0b'][index % 4];
-        drawPolygon(zone.polygon, color, `${color}18`);
+        const color = ['#38bdf8', '#8ed5ff', '#ffc176', '#22c55e'][index % 4];
+        drawPolygon(zone.polygon, color, `${color}15`);
         const anchor = zone.polygon[0];
         if (anchor) {
           const label = `${zone.name}: ${zone.current_count ?? 0}`;
@@ -677,13 +779,14 @@ export const LivePage: React.FC<LivePageProps> = ({ analytics, onAnalyticsUpdate
 
     if (overlays.seats) {
       overlayData.seats.forEach((seat) => {
-        const color = seat.status === 'occupied'
-          ? '#4ade80'
-          : seat.status === 'disabled'
-          ? '#64748b'
-          : seat.status === 'pending' || seat.status === 'uncertain'
-          ? '#f59e0b'
-          : '#38bdf8';
+        const color =
+          seat.status === 'occupied'
+            ? '#22c55e'
+            : seat.status === 'disabled'
+            ? '#33445c'
+            : seat.status === 'pending' || seat.status === 'uncertain'
+            ? '#f59e0b'
+            : '#38bdf8';
         drawPolygon(seat.polygon, color);
       });
     }
@@ -694,10 +797,9 @@ export const LivePage: React.FC<LivePageProps> = ({ analytics, onAnalyticsUpdate
       const y1 = Math.max(0, Math.min(canvas.height, rawY1));
       const x2 = Math.max(0, Math.min(canvas.width, rawX2));
       const y2 = Math.max(0, Math.min(canvas.height, rawY2));
-      const gender = track.gender?.toLowerCase() ?? 'unknown';
-      const color = gender.includes('female') ? '#f9a8d4' : gender.includes('male') ? '#60a5fa' : '#22d3ee';
-      const personLabel = track.person_id != null ? `P0${track.person_id}` : `T${track.track_id}`;
-      const isSelected = selectedPerson?.id === personLabel;
+      const personLabel = longTermPersonLabel(track);
+      const isSelected = personLabel != null && selectedPerson?.id === personLabel;
+      const boxColor = isSelected ? '#ffc176' : '#38bdf8';
 
       if (overlays.trajectory && track.trajectory && track.trajectory.length > 1) {
         ctx.beginPath();
@@ -705,44 +807,47 @@ export const LivePage: React.FC<LivePageProps> = ({ analytics, onAnalyticsUpdate
           if (index === 0) ctx.moveTo(x, y);
           else ctx.lineTo(x, y);
         });
-        ctx.strokeStyle = `${color}99`;
-        ctx.lineWidth = Math.max(1, canvas.width / 640);
+        ctx.strokeStyle = `${boxColor}88`;
+        ctx.lineWidth = 1.5;
         ctx.stroke();
       }
 
       if (overlays.boxes) {
-        ctx.strokeStyle = isSelected ? '#facc15' : color;
-        ctx.lineWidth = isSelected ? Math.max(2, canvas.width / 240) : Math.max(1, canvas.width / 320);
+        ctx.strokeStyle = boxColor;
+        ctx.lineWidth = 1.5;
         ctx.strokeRect(x1, y1, Math.max(0, x2 - x1), Math.max(0, y2 - y1));
       }
 
       const labels: string[] = [];
-      if (overlays.ids) labels.push(personLabel, `T${track.track_id}`);
+      if (overlays.ids && personLabel) labels.push(personLabel);
+      if (labelMode === 'debug') labels.push(`T${track.track_id}`);
       if (overlays.attributes && track.gender) labels.push(track.gender);
       if (labelMode === 'debug' && track.source) labels.push(track.source);
-      if (labelMode === 'debug' && typeof track.confidence === 'number') labels.push(`${(track.confidence * 100).toFixed(0)}%`);
-      if (overlays.motion && track.motion?.direction) {
-        const speed = typeof track.motion.speed_reference_px_per_second === 'number'
-          ? ` ${track.motion.speed_reference_px_per_second.toFixed(0)}rpx/s`
-          : '';
-        labels.push(`${track.motion.direction}${speed}`);
+      if (labelMode === 'debug' && typeof track.confidence === 'number') {
+        labels.push(`${(track.confidence * 100).toFixed(0)}%`);
       }
+      if (overlays.motion && track.motion?.direction) {
+        labels.push(track.motion.direction);
+      }
+
       if (labels.length > 0) {
-        const label = labels.join(' | ');
+        const label = labels.join(' · ');
         const textWidth = ctx.measureText(label).width;
-        const labelHeight = Math.max(17, canvas.height / 28);
+        const labelHeight = 16;
         const labelY = Math.max(labelHeight, y1);
-        ctx.fillStyle = `${color}dd`;
+
+        ctx.fillStyle = boxColor;
         ctx.fillRect(x1, labelY - labelHeight, textWidth + 8, labelHeight);
-        ctx.fillStyle = '#020617';
-        ctx.fillText(label, x1 + 4, labelY - 5);
+
+        ctx.fillStyle = '#0a0f18';
+        ctx.fillText(label, x1 + 4, labelY - 4);
       }
     });
   }, [labelMode, overlayData, overlays, selectedPerson]);
 
   useEffect(() => {
-    drawOverlay();
-  }, [drawOverlay]);
+    if (isVisible) drawOverlay();
+  }, [drawOverlay, isVisible]);
 
   const handleCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
@@ -760,20 +865,35 @@ export const LivePage: React.FC<LivePageProps> = ({ analytics, onAnalyticsUpdate
     const clickY = ((e.clientY - contentTop) / contentHeight) * frameHeight;
 
     const tracks = latestTracksRef.current;
-    const matchedTrack = tracks.find((tr) => {
-      const b = tr.bbox || [0, 0, 0, 0];
-      const x1 = b[0], y1 = b[1], x2 = b[2], y2 = b[3];
-      return clickX >= x1 && clickX <= x2 && clickY >= y1 && clickY <= y2;
-    }) || tracks[0];
+    const matchedTrack =
+      tracks.find((tr) => {
+        const b = tr.bbox || [0, 0, 0, 0];
+        const x1 = b[0],
+          y1 = b[1],
+          x2 = b[2],
+          y2 = b[3];
+        return clickX >= x1 && clickX <= x2 && clickY >= y1 && clickY <= y2;
+      }) || tracks[0];
 
     if (matchedTrack) {
       const tId = matchedTrack.track_id;
-      const pId = matchedTrack.person_id != null ? `P0${matchedTrack.person_id}` : `P0${tId}`;
-      const gender = matchedTrack.gender ? (matchedTrack.gender.toLowerCase().includes('female') ? 'Female-presenting' : 'Male-presenting') : 'Unclassified';
-      const confStr = typeof matchedTrack.confidence === 'number' ? `${(matchedTrack.confidence * 100).toFixed(1)}%` : 'Unclassified';
+      const personLabel = longTermPersonLabel(matchedTrack);
+      if (!personLabel) {
+        setSelectedPerson(null);
+        return;
+      }
+      const gender = matchedTrack.gender
+        ? matchedTrack.gender.toLowerCase().includes('female')
+          ? 'Female-presenting'
+          : 'Male-presenting'
+        : 'Unclassified';
+      const confStr =
+        typeof matchedTrack.confidence === 'number'
+          ? `${(matchedTrack.confidence * 100).toFixed(1)}%`
+          : 'Unclassified';
 
       setSelectedPerson({
-        id: pId,
+        id: personLabel,
         tracker: `T${tId}`,
         x: clickX,
         y: clickY,
@@ -801,300 +921,389 @@ export const LivePage: React.FC<LivePageProps> = ({ analytics, onAnalyticsUpdate
     { label: t.cameraConnected, ready: isCameraLive },
     { label: t.detectorReady, ready: warmupStatus ? detectorReadyFromStatus(warmupStatus) : false },
     { label: t.trackerReady, ready: warmupStatus ? trackerReadyFromStatus(warmupStatus) : false },
-    { label: warmupStatus && attributesReadyFromStatus(warmupStatus) ? t.attributesReady : t.attributesLoading, ready: warmupStatus ? attributesReadyFromStatus(warmupStatus) : false },
+    {
+      label:
+        warmupStatus && attributesReadyFromStatus(warmupStatus)
+          ? t.attributesReady
+          : t.attributesLoading,
+      ready: warmupStatus ? attributesReadyFromStatus(warmupStatus) : false,
+    },
   ];
+  const crowdCapacity = analytics.room_capacity ?? (analytics.total_seats > 0 ? analytics.total_seats : null);
 
   return (
-    <div className="p-3 sm:p-6 space-y-4 sm:space-y-6 max-w-7xl mx-auto pb-20 md:pb-6">
-      {/* Live Monitor Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-        <div>
-          <h2 className="text-lg sm:text-xl font-bold font-mono text-slate-100 flex items-center gap-2">
-            <span>{t.liveTitle}</span>
-            <span
-              className={`text-[10px] sm:text-xs border px-2 py-0.5 rounded font-mono font-bold ${
-                isStreaming
-                  ? 'bg-emerald-500/20 text-emerald-300 border-emerald-400/50'
-                  : 'bg-slate-800 text-slate-400 border-slate-700'
-              }`}
-            >
-              {isStreaming ? '● LIVE AI STREAM' : 'OFFLINE'}
+    <div className="p-4 sm:p-8 flex flex-col lg:flex-row gap-8 lg:gap-10 h-full max-w-7xl mx-auto">
+      {/* Left Column: Camera Feed Area (~70-75% of desktop width) */}
+      <div className="flex-1 flex flex-col min-w-0">
+        {/* Video Header Controls */}
+        <div className="flex justify-between items-center mb-3">
+          <div className="flex items-center gap-2">
+            <Camera className="w-4 h-4 text-text-muted" />
+            <span className="font-mono text-xs text-text-muted uppercase tracking-wider">
+              CAM_01_FRONT
             </span>
-          </h2>
-          <p className="text-[11px] sm:text-xs text-sky-300/80 font-mono">{t.liveSub}</p>
-        </div>
-
-        {/* Action Controls */}
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            onClick={switchCameraFacing}
-            className="cyber-btn text-xs px-2.5 py-1.5 rounded-lg flex items-center gap-1 font-mono cursor-pointer"
-          >
-            <RefreshCw className="w-3.5 h-3.5 text-cyan-400" />
-            <span>{t.switchCam} ({facingMode === 'user' ? 'Front' : 'Back'})</span>
-          </button>
-
-          <button
-            onClick={handleResetSession}
-            className="cyber-btn text-xs px-2.5 py-1.5 rounded-lg flex items-center gap-1 font-mono cursor-pointer"
-          >
-            <span>{t.resetTracker}</span>
-          </button>
-
-          <div className="flex items-center space-x-1 bg-[#071120] border border-sky-500/40 p-1 rounded-lg text-xs font-mono">
-            {(['minimal', 'debug'] as LabelMode[]).map((mode) => (
-              <button
-                key={mode}
-                onClick={() => setLabelMode(mode)}
-                className={`px-2 py-0.5 sm:py-1 rounded capitalize transition-all cursor-pointer ${
-                  labelMode === mode
-                    ? 'bg-cyan-400 text-slate-950 font-bold shadow-sm'
-                    : 'text-slate-400 hover:text-cyan-300'
-                }`}
-              >
-                {mode}
-              </button>
-            ))}
           </div>
 
-          <span className="px-2 py-1 rounded bg-cyan-400/10 border border-cyan-400/30 text-cyan-300 text-[10px] font-mono uppercase">
-            WebRTC send-only · WS metadata · HTTP fallback
-          </span>
+          <div className="flex items-center gap-3">
+            {/* Boxes toggle button */}
+            <Button
+              variant={overlays.boxes ? 'secondary' : 'ghost'}
+              size="sm"
+              onClick={() => toggleOverlay('boxes')}
+              className="gap-1.5 font-medium"
+            >
+              <Crop className="w-3.5 h-3.5" />
+              <span>{t.boxes}</span>
+            </Button>
+
+            {/* IDs toggle button */}
+            <Button
+              variant={overlays.ids ? 'secondary' : 'ghost'}
+              size="sm"
+              onClick={() => toggleOverlay('ids')}
+              className="gap-1.5 font-medium"
+            >
+              <BadgeIcon className="w-3.5 h-3.5" />
+              <span>{t.ids}</span>
+            </Button>
+
+            {/* Overlays Radix Dropdown */}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="ghost" size="sm" className="gap-1 font-medium">
+                  <Layers className="w-3.5 h-3.5" />
+                  <span>{t.overlays}</span>
+                  <ChevronDown className="w-3.5 h-3.5" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-56">
+                <DropdownMenuLabel>Spatial</DropdownMenuLabel>
+                <DropdownMenuCheckboxItem
+                  checked={overlays.zones}
+                  onCheckedChange={() => toggleOverlay('zones')}
+                >
+                  {t.zones}
+                </DropdownMenuCheckboxItem>
+                <DropdownMenuCheckboxItem
+                  checked={overlays.seats}
+                  onCheckedChange={() => toggleOverlay('seats')}
+                >
+                  {t.seats}
+                </DropdownMenuCheckboxItem>
+                <DropdownMenuCheckboxItem
+                  checked={overlays.motion}
+                  onCheckedChange={() => toggleOverlay('motion')}
+                >
+                  {t.motion}
+                </DropdownMenuCheckboxItem>
+                <DropdownMenuCheckboxItem
+                  checked={overlays.trajectory}
+                  onCheckedChange={() => toggleOverlay('trajectory')}
+                >
+                  {t.trajectory}
+                </DropdownMenuCheckboxItem>
+
+                <DropdownMenuSeparator />
+                <DropdownMenuLabel>Attributes</DropdownMenuLabel>
+                <DropdownMenuCheckboxItem
+                  checked={overlays.attributes}
+                  onCheckedChange={() => toggleOverlay('attributes')}
+                >
+                  {t.attributes}
+                </DropdownMenuCheckboxItem>
+
+                <DropdownMenuSeparator />
+                <DropdownMenuLabel>Advanced</DropdownMenuLabel>
+                <DropdownMenuCheckboxItem
+                  checked={labelMode === 'debug'}
+                  onCheckedChange={(checked) => setLabelMode(checked ? 'debug' : 'minimal')}
+                >
+                  {t.debugLabels}
+                </DropdownMenuCheckboxItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+
+            {/* Switch Camera */}
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={switchCameraFacing}
+              title={t.switchCam}
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+            </Button>
+          </div>
+        </div>
+
+        {errorMessage && (
+          <div className="mb-3 bg-danger/15 border border-danger/40 text-danger p-3 rounded text-xs flex items-center gap-2">
+            <AlertCircle className="w-4 h-4 shrink-0" />
+            <span>{errorMessage}</span>
+          </div>
+        )}
+
+        {/* Video & Canvas Container */}
+        <div className="relative w-full aspect-video bg-black border border-border-default rounded-lg overflow-hidden flex items-center justify-center">
+          {/* Local hardware video */}
+          <video
+            ref={videoRef}
+            className="absolute inset-0 w-full h-full object-contain pointer-events-none z-0"
+            autoPlay
+            muted
+            playsInline
+          />
+
+          {/* Transparent Overlay Canvas */}
+          <canvas
+            ref={canvasRef}
+            width={640}
+            height={480}
+            onClick={handleCanvasClick}
+            className="absolute inset-0 w-full h-full object-contain cursor-crosshair z-10"
+            title="Click on any person box to view details"
+          />
+
+          {/* Standby Camera Card */}
+          {!isCameraLive && (
+            <div className="absolute inset-0 bg-[#0A0F18]/95 flex flex-col items-center justify-center p-6 text-center space-y-4 z-20">
+              <div className="w-14 h-14 rounded-full bg-surface-secondary border border-border-default flex items-center justify-center text-text-muted">
+                <Camera className="w-7 h-7" />
+              </div>
+              <div>
+                <h3 className="text-base font-semibold text-text-primary">{t.cameraStandby}</h3>
+                <p className="text-xs text-text-muted max-w-sm mt-1">{t.cameraStandbySub}</p>
+              </div>
+
+              {isStarting && (
+                <div className="w-full max-w-xs rounded-md border border-border-default bg-surface-secondary p-3 text-left space-y-2">
+                  <div className="flex items-center justify-between text-xs text-text-primary">
+                    <span>{warmupStatus?.message || t.warmupStart}</span>
+                    <span className="text-text-muted">{warmupStatus?.stage || 'starting'}</span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-1.5 text-[10px] font-mono">
+                    {startupSteps.map((step) => (
+                      <span
+                        key={step.label}
+                        className={step.ready ? 'text-success' : 'text-text-muted'}
+                      >
+                        {step.ready ? '✓' : '◌'} {step.label}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <Button
+                variant="default"
+                size="lg"
+                onClick={toggleStreaming}
+                disabled={isStarting}
+                className="gap-2"
+              >
+                {isStarting ? (
+                  <RefreshCw className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Play className="w-4 h-4 fill-current" />
+                )}
+                <span>{isStarting ? t.warmingUp : t.startStream}</span>
+              </Button>
+            </div>
+          )}
+
+          {/* Selected Person Inspector Box */}
+          {selectedPerson && (
+            <div className="absolute top-4 left-4 bg-surface-primary/95 border border-border-strong rounded-lg p-3 text-xs space-y-1 z-30 shadow-xl min-w-[160px]">
+              <div className="flex items-center justify-between gap-3 font-semibold text-primary">
+                <span className="flex items-center gap-1">
+                  <UserCheck className="w-3.5 h-3.5" /> Person {selectedPerson.id}
+                </span>
+                <button
+                  onClick={() => setSelectedPerson(null)}
+                  className="text-text-muted hover:text-text-primary cursor-pointer text-xs"
+                >
+                  ✕
+                </button>
+              </div>
+              {labelMode === 'debug' && (
+                <div className="font-mono text-[11px] text-text-muted">
+                  Tracker: <strong className="text-text-primary">{selectedPerson.tracker}</strong>
+                </div>
+              )}
+              <div className="font-mono text-[11px] text-text-muted">
+                Attribute: <strong className="text-text-primary">{selectedPerson.attr}</strong>
+              </div>
+              <div className="font-mono text-[11px] text-text-muted">
+                Confidence: <strong className="text-primary">{selectedPerson.confidence}</strong>
+              </div>
+            </div>
+          )}
+
+          {/* Floating Stop Button when stream is active */}
+          {isCameraLive && (
+            <Button
+              variant="destructive"
+              size="icon"
+              onClick={toggleStreaming}
+              className="absolute bottom-4 right-4 rounded-full shadow-lg h-10 w-10 z-20"
+              title={t.stopStream}
+            >
+              <Pause className="w-4 h-4 fill-current" />
+            </Button>
+          )}
+        </div>
+
+        {/* Bottom Status Bar */}
+        <div className="mt-3 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <span
+              className={`w-1.5 h-1.5 rounded-full ${
+                isStreaming ? 'bg-success animate-pulse' : isCameraLive ? 'bg-warning' : 'bg-text-muted'
+              }`}
+            />
+            <span className="font-mono text-xs text-text-muted">
+              {isStreaming
+                ? t.monitoringActive
+                : isCameraLive
+                ? t.preparingMonitoring
+                : t.cameraStandby}
+            </span>
+          </div>
+
+          <div className="flex items-center gap-3 text-xs font-mono text-text-muted">
+            {activeTransport && (
+              <span className="uppercase text-[10px] px-1.5 py-0.5 rounded bg-surface-secondary border border-border-default">
+                {activeTransport}
+              </span>
+            )}
+            {cameraFps != null && <span>{cameraFps} FPS</span>}
+            {latencyMs != null && <span>{latencyMs} ms</span>}
+            {aiUpdateRateHz != null && <span>{aiUpdateRateHz.toFixed(1)} Hz</span>}
+            <button
+              onClick={handleResetSession}
+              disabled={!sessionId}
+              className="hover:text-text-primary transition-colors cursor-pointer disabled:opacity-30"
+              title={t.resetTracker}
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+            </button>
+          </div>
         </div>
       </div>
 
-      {errorMessage && (
-        <div className="bg-rose-500/15 border border-rose-500/40 text-rose-300 p-3 rounded-lg text-xs font-mono font-bold flex items-center gap-2">
-          <AlertCircle className="w-4 h-4 shrink-0" />
-          <span>{errorMessage}</span>
-        </div>
-      )}
-
-      {/* Main Live Monitor Layout */}
-      <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
-        {/* Left Column: Live Video + Circle Vector Hologram Radar Ring */}
-        <div className="lg:col-span-3 space-y-4">
-          <div className="cyber-card relative bg-[#071120] border border-sky-500/50 rounded-2xl overflow-hidden shadow-2xl aspect-video flex items-center justify-center">
-            {/* Raw HTML5 Video Element (Hardware Accelerated Camera Feed) */}
-            <video
-              ref={videoRef}
-              className="absolute inset-0 w-full h-full object-contain pointer-events-none z-0 opacity-100"
-              autoPlay
-              muted
-              playsInline
-            />
-
-            {/* AI Annotated Frame Canvas Overlay */}
-            <canvas
-              ref={canvasRef}
-              width={640}
-              height={480}
-              onClick={handleCanvasClick}
-              className="absolute inset-0 w-full h-full object-contain cursor-crosshair z-10"
-              title="Click on any person box to focus details"
-            />
-
-            {/* Circle Vector Hologram Radar Ring Overlay */}
-            <div className="absolute top-4 right-4 w-28 h-28 pointer-events-none z-20 opacity-60">
-              <div className="w-full h-full border-2 border-dashed border-cyan-400 rounded-full radar-ring flex items-center justify-center">
-                <div className="w-16 h-16 border border-cyan-400/50 rounded-full flex items-center justify-center">
-                  <Crosshair className="w-6 h-6 text-cyan-400 animate-ping" />
-                </div>
-              </div>
-            </div>
-
-            {/* Standby Camera Card */}
-            {!isCameraLive && (
-              <div className="absolute inset-0 bg-[#071120]/95 backdrop-blur-md flex flex-col items-center justify-center p-6 text-center space-y-4 z-20">
-                <div className="w-16 h-16 rounded-2xl bg-cyan-400/10 border border-cyan-400/30 flex items-center justify-center text-cyan-400 shadow-xl shadow-cyan-500/20">
-                  <Camera className="w-8 h-8 animate-pulse" />
-                </div>
-                <div>
-                  <h3 className="text-lg font-bold font-mono text-slate-100">{t.standbyTitle}</h3>
-                  <p className="text-xs text-sky-300/70 max-w-sm mt-1">{t.standbySub}</p>
-                </div>
-
-                {isStarting && (
-                  <div className="w-full max-w-sm rounded-xl border border-cyan-400/30 bg-cyan-400/5 p-3 text-left space-y-2" role="status" aria-live="polite" aria-busy="true">
-                    <div className="flex items-center justify-between gap-3 text-[11px] font-mono text-cyan-200">
-                      <span>{warmupStatus?.message || t.warmupStart}</span>
-                      <span className="shrink-0 text-sky-300/70">{warmupStatus?.stage || 'starting'}</span>
-                    </div>
-                    <div className="grid grid-cols-2 gap-2 text-[10px] font-mono">
-                      {startupSteps.map((step) => (
-                        <span key={step.label} className={step.ready ? 'text-emerald-300' : 'text-slate-500'}>
-                          {step.ready ? '✓' : '◌'} {step.label}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                <button
-                  onClick={toggleStreaming}
-                  disabled={isStarting}
-                  aria-busy={isStarting}
-                  className="cyber-btn px-6 py-2.5 rounded-xl font-bold font-mono flex items-center space-x-2 text-cyan-300 hover:text-white transition-all transform hover:scale-105 active:scale-95 cursor-pointer shadow-lg shadow-cyan-500/20 disabled:cursor-wait disabled:opacity-50 disabled:hover:scale-100"
-                >
-                  {isStarting ? <RefreshCw className="w-4 h-4 animate-spin text-cyan-400" /> : <Play className="w-4 h-4 fill-current text-cyan-400" />}
-                  <span>{isStarting ? t.warmingUp : t.startStream}</span>
-                </button>
-              </div>
-            )}
-
-            {isCameraLive && !isStreaming && (
-              <div className="absolute top-4 left-4 right-4 bg-[#0b172a]/90 backdrop-blur-md p-3 rounded-xl border border-cyan-400/40 shadow-2xl text-xs font-mono z-20 space-y-2" role="status" aria-live="polite">
-                <div className="flex items-center justify-between gap-3">
-                  <span className="flex items-center gap-2 text-emerald-300 font-bold">
-                    <Camera className="w-4 h-4" /> {t.cameraConnected}
-                  </span>
-                  <span className="text-cyan-300">{warmupStatus?.message || t.warmupStart}</span>
-                </div>
-                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-[10px]">
-                  <span className={warmupStatus && detectorReadyFromStatus(warmupStatus) ? 'text-emerald-300' : 'text-slate-500'}>{warmupStatus && detectorReadyFromStatus(warmupStatus) ? '✓' : '○'} {t.detectorReady}</span>
-                  <span className={warmupStatus && trackerReadyFromStatus(warmupStatus) ? 'text-emerald-300' : 'text-slate-500'}>{warmupStatus && trackerReadyFromStatus(warmupStatus) ? '✓' : '○'} {t.trackerReady}</span>
-                  <span className={warmupStatus && attributesReadyFromStatus(warmupStatus) ? 'text-emerald-300' : 'text-amber-300'}>{warmupStatus && attributesReadyFromStatus(warmupStatus) ? '✓' : '◌'} {warmupStatus && attributesReadyFromStatus(warmupStatus) ? t.attributesReady : t.attributesLoading}</span>
-                </div>
-              </div>
-            )}
-
-            {/* Person Details Selection Card */}
-            {selectedPerson && (
-              <div className="absolute top-4 left-4 bg-[#0b172a]/90 backdrop-blur-md p-3 rounded-xl border border-cyan-400/50 shadow-2xl text-xs font-mono space-y-1 z-30 min-w-[180px]">
-                <div className="flex items-center justify-between gap-4 font-bold text-cyan-300">
-                  <span className="flex items-center gap-1">
-                    <UserCheck className="w-3.5 h-3.5" /> Person {selectedPerson.id}
-                  </span>
-                  <button onClick={() => setSelectedPerson(null)} className="text-slate-400 hover:text-white cursor-pointer">✕</button>
-                </div>
-                <div>Tracker ID: <strong className="text-slate-200">{selectedPerson.tracker}</strong></div>
-                <div>Attribute: <strong className="text-emerald-400">{selectedPerson.attr}</strong></div>
-                <div>Confidence: <strong className="text-cyan-400">{selectedPerson.confidence}</strong></div>
-              </div>
-            )}
-
-            {isStreaming && (
-              <div className="absolute top-4 left-4 flex items-center space-x-2 bg-[#0b172a]/80 backdrop-blur-md px-3 py-1.5 rounded-lg border border-sky-500/40 text-xs text-slate-200 font-mono z-20">
-                <Camera className="w-4 h-4 text-cyan-400" />
-                <span className="font-bold">{t.liveWebcamBadge}</span>
-              </div>
-            )}
-
-            {isCameraLive && (
-              <button
-                onClick={toggleStreaming}
-                className="absolute bottom-4 right-4 bg-rose-500 hover:bg-rose-400 text-white p-2.5 rounded-full shadow-lg transition-transform hover:scale-105 cursor-pointer z-20"
-                title={t.stopStream}
-              >
-                <Pause className="w-5 h-5 fill-current" />
-              </button>
-            )}
-          </div>
-
-          {/* Real-time Telemetry Bar */}
-          <div className="cyber-card p-3 rounded-xl flex flex-wrap items-center justify-between gap-2 text-xs font-mono text-sky-300">
-            <div className="flex flex-wrap items-center gap-2 sm:gap-4">
-              <span>
-                Transport: <strong className="text-cyan-400">{activeTransport ? activeTransport.toUpperCase() : '--'}</strong>
-              </span>
-              <span className="text-slate-600 hidden xs:inline">|</span>
-              <span>
-                Camera: <strong className="text-slate-100">{cameraFps != null ? `${cameraFps} FPS` : '--'}</strong>
-              </span>
-              <span className="text-slate-600 hidden xs:inline">|</span>
-              <span>
-                AI Cadence: <strong className="text-cyan-400 font-bold">
-                  {aiUpdateRateHz != null ? `${aiUpdateRateHz.toFixed(1)} Hz` : '--'}
-                </strong>
-              </span>
-              <span className="text-slate-600 hidden xs:inline">|</span>
-              <span>
-                Backend Latency: <strong className="text-slate-100">{latencyMs != null ? `${latencyMs} ms` : '--'}</strong>
-              </span>
-            </div>
-            <span className={`font-mono font-bold ${isStreaming ? 'text-emerald-400' : isCameraLive ? 'text-amber-300' : 'text-slate-500'}`}>
-              {isStreaming ? '● Model Connected' : isCameraLive ? '◌ AI Initializing' : '○ Standby'}
-            </span>
-          </div>
+      {/* Right Side Panel Area (320px width on desktop) */}
+      <div className="w-full lg:w-[320px] flex flex-col shrink-0 space-y-8 overflow-y-auto">
+        <div className="flex items-center gap-2">
+          <h2 className="text-xl font-semibold text-text-primary tracking-tight">
+            {t.liveMetrics}
+          </h2>
         </div>
 
-        {/* Right Column: Live Model Realtime KPI Summary */}
-        <div className="space-y-6">
-          <div className="cyber-card p-4 space-y-3">
-            <h3 className="text-sm font-bold font-mono text-slate-100 border-b border-sky-500/30 pb-2">
-              {t.modelStats}
-            </h3>
-
-            <div className="flex justify-between items-center text-xs font-mono">
-              <span className="text-sky-300">{t.detectedCrowd}</span>
-              <span className="text-xl font-bold text-cyan-400">{analytics.total_crowd}</span>
-            </div>
-
-            <div className="flex justify-between items-center text-xs font-mono">
-              <span className="text-sky-300">{t.femaleMale}</span>
-              <span className="text-sm font-bold text-slate-200">
-                {analytics.visual_presentation.female_presenting} F / {analytics.visual_presentation.male_presenting} M
+        <div className="flex flex-col gap-8">
+          {/* Total People */}
+          <div>
+            <div className="flex justify-between items-center mb-1.5">
+              <span className="text-xs font-semibold text-text-muted uppercase tracking-widest">
+                {t.totalPeople}
               </span>
+              <Users className="w-4 h-4 text-text-muted" />
             </div>
-
-            <div className="flex justify-between items-center text-xs font-mono">
-              <span className="text-sky-300">{t.unclassifiedUnknown}</span>
-              <span className="text-sm font-bold text-amber-400">
-                {analytics.visual_presentation.unknown}
+            <div className="flex items-baseline gap-2 mb-1">
+              <span className="text-5xl font-semibold text-text-primary leading-none tracking-tight">
+                {analytics.total_crowd}
               </span>
+              <span className="text-xs text-text-muted pb-1">{t.detected}</span>
             </div>
-
-            <div className="flex justify-between items-center text-xs font-mono">
-              <span className="text-sky-300">{t.coveragePct}</span>
-              <span className="text-sm font-bold text-emerald-400">
-                {analytics.visual_presentation.coverage_pct}%
-              </span>
+            <div className="font-mono text-xs text-text-muted mb-2">
+              {t.moving} {analytics.moving_count} · {t.stationary} {analytics.stationary_count}
             </div>
-
-            <div className="flex justify-between items-center text-xs font-mono border-t border-sky-500/30 pt-2">
-              <span className="text-sky-300">{t.seatsOccupiedCount}</span>
-              <span className="text-sm font-bold text-slate-100">
-                {analytics.total_seats > 0 && analytics.seats_occupied != null ? `${analytics.seats_occupied} / ${analytics.total_seats}` : '--'}
-              </span>
+            <div className="w-full bg-surface-container-high h-1 rounded-full overflow-hidden">
+              <div
+                className="bg-primary h-full rounded-full transition-all duration-300"
+                style={{
+                  width: `${crowdCapacity && crowdCapacity > 0
+                    ? Math.min(100, Math.max(0, (analytics.total_crowd / crowdCapacity) * 100))
+                    : 0}%`,
+                }}
+              />
             </div>
           </div>
 
-          {/* Overlay Checkboxes */}
-          <div className="cyber-card p-4 space-y-3">
-            <div className="flex items-center justify-between border-b border-sky-500/30 pb-2">
-              <h3 className="text-sm font-bold font-mono text-slate-100 flex items-center gap-2">
-                <Layers className="w-4 h-4 text-cyan-400" />
-                {t.overlayControls}
-              </h3>
-              <Settings className="w-4 h-4 text-slate-500" />
+          {/* Traffic Flow */}
+          <div>
+            <div className="flex justify-between items-center mb-3">
+              <span className="text-xs font-semibold text-text-muted uppercase tracking-widest">
+                {t.trafficFlow}
+              </span>
+              <ArrowDownUp className="w-4 h-4 text-text-muted" />
             </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="flex flex-col">
+                <span className="font-mono text-xs text-success flex items-center gap-1 mb-1">
+                  <ArrowDown className="w-3.5 h-3.5" /> {t.in}
+                </span>
+                <span className="text-2xl font-semibold text-text-primary font-mono">
+                  {analytics.flow_in}
+                </span>
+              </div>
+              <div className="flex flex-col border-l border-border-default pl-4">
+                <span className="font-mono text-xs text-danger flex items-center gap-1 mb-1">
+                  <ArrowUp className="w-3.5 h-3.5" /> {t.out}
+                </span>
+                <span className="text-2xl font-semibold text-text-primary font-mono">
+                  {analytics.flow_out}
+                </span>
+              </div>
+            </div>
+          </div>
 
-            <div className="space-y-2 text-xs font-mono">
-              {([
-                { key: 'boxes', label: t.boxes },
-                { key: 'ids', label: t.ids },
-                { key: 'attributes', label: t.attributes },
-                { key: 'motion', label: t.motion },
-                { key: 'zones', label: t.zones },
-                { key: 'seats', label: t.seats },
-                { key: 'trajectory', label: 'Trajectory' },
-              ] as { key: keyof OverlayOptions; label: string }[]).map((item) => {
-                const isChecked = overlays[item.key];
-                return (
-                  <button
-                    key={item.key}
-                    onClick={() => toggleOverlay(item.key)}
-                    className="w-full flex items-center space-x-2 text-slate-300 hover:text-cyan-300 p-1 rounded hover:bg-sky-500/10 transition-colors text-left cursor-pointer"
-                  >
-                    {isChecked ? (
-                      <CheckSquare className="w-4 h-4 text-cyan-400 shrink-0" />
-                    ) : (
-                      <Square className="w-4 h-4 text-slate-500 shrink-0" />
-                    )}
-                    <span>{item.label}</span>
-                  </button>
-                );
-              })}
+          {/* Density */}
+          <div>
+            <div className="flex justify-between items-center mb-1.5">
+              <span className="text-xs font-semibold text-text-muted uppercase tracking-widest">
+                {t.density}
+              </span>
+              <Grid className="w-4 h-4 text-text-muted" />
+            </div>
+            <div className="flex items-baseline gap-2">
+              <span className="text-2xl font-semibold text-text-primary font-mono">
+                {analytics.density_per_m2 != null ? analytics.density_per_m2.toFixed(2) : '—'}
+              </span>
+              <span className="font-mono text-xs text-text-muted">/ m²</span>
+            </div>
+            <div className="text-xs text-success mt-1">
+              {analytics.density_per_m2 != null ? t.normalLevel : t.calibrationRequired}
+            </div>
+          </div>
+
+          {/* Seat Occupancy */}
+          <div>
+            <div className="flex justify-between items-center mb-1.5">
+              <span className="text-xs font-semibold text-text-muted uppercase tracking-widest">
+                {t.seatOccupancy}
+              </span>
+              <Armchair className="w-4 h-4 text-text-muted" />
+            </div>
+            <div className="flex items-baseline gap-2">
+              <span className="text-2xl font-semibold text-text-primary font-mono">
+                {analytics.seats_occupied != null && analytics.total_seats > 0
+                  ? analytics.seats_occupied
+                  : '—'}
+              </span>
+              <span className="font-mono text-xs text-text-muted">
+                / {analytics.total_seats || '—'}
+              </span>
+            </div>
+            <div className="w-full bg-surface-container-high h-1 rounded-full mt-3 overflow-hidden flex">
+              <div
+                className="bg-primary h-full transition-all duration-300"
+                style={{
+                  width: `${
+                    analytics.total_seats > 0 && analytics.seats_occupied != null
+                      ? Math.min(100, Math.round((analytics.seats_occupied / analytics.total_seats) * 100))
+                      : 0
+                  }%`,
+                }}
+              />
             </div>
           </div>
         </div>

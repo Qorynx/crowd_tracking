@@ -110,6 +110,7 @@ class _WarmupEntry:
     completed_monotonic: float | None = None
     pipeline: LivePipeline | None = None
     thread: Thread | None = None
+    running: bool = False
     detector_ready: bool = False
     tracker_ready: bool = False
     attributes_ready: bool = False
@@ -146,9 +147,18 @@ class SessionManager(Protocol):
 
     def close_all(self) -> None: ...
 
-    def start_warmup(self, mode: str = "default") -> dict[str, Any]: ...
+    def start_warmup(
+        self,
+        mode: str = "default",
+        *,
+        start_immediately: bool = True,
+    ) -> dict[str, Any]: ...
+
+    def run_warmup(self, mode: str = "default") -> None: ...
 
     def warmup_status(self, mode: str = "default") -> dict[str, Any]: ...
+
+    def release_warm_pipelines(self) -> None: ...
 
 
 class DemoSessionManager:
@@ -264,8 +274,13 @@ class DemoSessionManager:
             self._last_creation_error = None
             return self._snapshot_locked(entry, now_monotonic)
 
-    def start_warmup(self, mode: str = "default") -> dict[str, Any]:
-        """Start an idempotent background model warmup and return its status."""
+    def start_warmup(
+        self,
+        mode: str = "default",
+        *,
+        start_immediately: bool = True,
+    ) -> dict[str, Any]:
+        """Prepare an idempotent warmup and optionally start its local thread."""
 
         normalized_mode = self._normalize_mode(mode)
         thread: Thread | None = None
@@ -305,16 +320,38 @@ class DemoSessionManager:
             entry.completed_monotonic = None
             entry.started_at = wall_now.isoformat()
             entry.completed_at = None
-            thread = Thread(
-                target=self._run_warmup,
-                args=(normalized_mode,),
-                name=f"crowd-warmup-{normalized_mode}",
-                daemon=True,
-            )
-            entry.thread = thread
+            entry.running = False
+            if start_immediately:
+                thread = Thread(
+                    target=self.run_warmup,
+                    args=(normalized_mode,),
+                    name=f"crowd-warmup-{normalized_mode}",
+                    daemon=True,
+                )
+                entry.thread = thread
+            else:
+                entry.thread = None
             snapshot = self._warmup_snapshot_locked(entry)
-        thread.start()
+        if thread is not None:
+            thread.start()
         return snapshot
+
+    def run_warmup(self, mode: str = "default") -> None:
+        """Run one prepared warmup exactly once in the caller's lifetime."""
+
+        normalized_mode = self._normalize_mode(mode)
+        with self._lock:
+            entry = self._warmups.get(normalized_mode)
+            if entry is None or entry.status != "warming" or entry.running:
+                return
+            entry.running = True
+        try:
+            self._run_warmup(normalized_mode)
+        finally:
+            with self._lock:
+                entry = self._warmups.get(normalized_mode)
+                if entry is not None:
+                    entry.running = False
 
     def warmup_status(self, mode: str = "default") -> dict[str, Any]:
         """Return the current progress for one mode without starting work."""
@@ -325,6 +362,33 @@ class DemoSessionManager:
             if entry is None:
                 entry = _WarmupEntry(mode=normalized_mode)
             return self._warmup_snapshot_locked(entry)
+
+    def release_warm_pipelines(self) -> None:
+        """Release idle live-model caches before another GPU workflow starts."""
+
+        with self._lock:
+            if self._entries or self._creation_in_progress:
+                raise SessionCapacityError("A live session currently owns the GPU pipeline.")
+            if any(entry.running or entry.status == "warming" for entry in self._warmups.values()):
+                raise SessionWarmupInProgress("Live model warmup is still using the GPU pipeline.")
+            pipelines = [entry.pipeline for entry in self._warmups.values() if entry.pipeline is not None]
+            for entry in self._warmups.values():
+                entry.pipeline = None
+                entry.status = "idle"
+                entry.progress = 0.0
+                entry.stage = "idle"
+                entry.message = "Model chưa được warm up."
+                entry.error = None
+                entry.detector_ready = False
+                entry.tracker_ready = False
+                entry.attributes_ready = False
+                entry.thread = None
+                entry.started_monotonic = None
+                entry.started_at = None
+                entry.completed_monotonic = None
+                entry.completed_at = None
+        for pipeline in pipelines:
+            self._close_pipeline(pipeline)
 
     def _run_warmup(self, mode: str) -> None:
         pipeline: LivePipeline | None = None

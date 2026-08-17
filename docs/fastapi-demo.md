@@ -24,11 +24,10 @@ Install the normal runtime and the optional media transport dependencies:
 .\.venv\Scripts\python.exe -m uvicorn "src.api.app:create_api_app" --factory --host 127.0.0.1 --port 8000
 ```
 
-`deploy/modal_app.py` also installs both dependency sets. Its current Modal
-ASGI target exposes the REST API only; run `app.py` locally if a Gradio UI is
-needed. Direct WebRTC media on a public Modal deployment has an additional
-caveat documented below; no deployment command is needed merely to develop or
-test the API locally.
+`deploy/modal_app.py` also installs both dependency sets. Its Modal ASGI target
+is API-only; run `app.py` locally if a Gradio UI is needed. Public live media
+uses the lifecycle WebSocket described below so the aiortc peer remains inside
+one Modal Function Call.
 
 The person detector is an application artifact at
 `artifacts/person_detector/yolo11n.pt`, alongside the face and classification
@@ -50,14 +49,19 @@ automatic download cache.
 | `WebSocket` | `/api/v1/sessions/{session_id}/metadata` | Pushes each newer bbox/analytics snapshot for the live Canvas overlay. |
 | `POST` | `/api/v1/sessions/{session_id}/reset` | Clears FastTracker, `person_id`, counters, heatmap, and cadence telemetry. |
 | `DELETE` | `/api/v1/sessions/{session_id}` | Closes the live worker and releases its tracking state. |
+| `WS` | `/api/v1/webrtc/connect` | Preferred signaling + metadata channel; owns the peer for the socket lifetime. |
 | `POST` | `/api/v1/webrtc/offer` | Self-hosted browser WebRTC signaling; creates the live session and returns the SDP answer. |
-| `POST` | `/api/v1/video/analyze` | Optional bounded short-video analysis fallback. |
+| `POST` | `/api/v1/video/analyze` | Uploads one bounded clip and immediately creates an asynchronous analysis job. |
+| `GET` | `/api/v1/video/jobs/{job_id}` | Returns queued/processing progress or the completed video result. |
+| `GET` | `/api/v1/video/artifacts/{artifact_id}` | Streams a short-lived annotated H.264 MP4. |
 
-The production manager starts a background warm-up for `classroom_demo` during
-application startup and keeps the resulting pipeline in a one-slot warm pool.
-`POST /warmup` is still safe to call from a browser: it returns the existing
-state instead of loading a second copy. A live session claims that pipeline,
-resets only stream state, and returns it to the pool on `DELETE`.
+Normal self-hosted startup warms `classroom_demo` in the background and keeps
+the resulting pipeline in a one-slot warm pool. Modal sets
+`API_WARM_ON_START=false`, so health/readiness traffic does not initialize a
+GPU model; the React live flow starts the same idempotent warmup on demand.
+`POST /warmup` returns existing state instead of loading a second copy. A live
+session claims that pipeline, resets only stream state, and returns it to the
+pool on `DELETE`.
 
 Warm-up is staged. `tracking_ready` means YOLO and FastTracker can accept live
 frames while `attributes_ready` is still false; face/body attributes are then
@@ -92,7 +96,8 @@ The only allowed modes are `default` and `classroom_demo`.  `classroom_demo`
 uses the deployed classroom profile; it reports an unconfigured/calibration
 state until a real camera geometry config has been supplied.
 
-For a live dashboard, connect the metadata WebSocket instead of polling REST:
+For a manually-created REST session, connect the compatibility metadata
+WebSocket instead of polling REST:
 
 ```bash
 ws://127.0.0.1:8000/api/v1/sessions/demo_abc123/metadata
@@ -130,11 +135,11 @@ curl -X POST http://127.0.0.1:8000/api/v1/sessions/demo_abc123/reset
 curl -X DELETE http://127.0.0.1:8000/api/v1/sessions/demo_abc123
 ```
 
-## WebRTC send-only camera + metadata WebSocket (self-hosted ASGI)
+## WebRTC send-only camera + metadata WebSocket
 
-`POST /api/v1/webrtc/offer` is the media entry point.  It accepts a complete
-**non-trickle ICE** offer and returns an SDP answer plus a newly allocated
-`session_id`:
+`WebSocket /api/v1/webrtc/connect` is the React client's media entry point. It
+accepts a complete **non-trickle ICE** offer, returns an SDP answer plus a newly
+allocated `session_id`, then pushes sequence-gated metadata on the same socket:
 
 ```json
 {
@@ -148,10 +153,12 @@ curl -X DELETE http://127.0.0.1:8000/api/v1/sessions/demo_abc123
 The offer creates an **inbound-only media path**. aiortc consumes the browser
 camera track and submits frames to the capacity-one live processor; it does
 not create an annotated output track. The browser keeps its local raw
-`<video>` smooth and connects to
-`/api/v1/sessions/{session_id}/metadata` to receive the newest compact
-analytics/overlay envelope and draw it on Canvas. REST `/stats` remains useful
-for control/debug clients, but is not the primary live data path.
+`<video>` smooth and receives the newest compact analytics/overlay envelope on
+that lifecycle socket to draw on Canvas. REST `/stats` and
+`/sessions/{id}/metadata` remain useful compatibility paths for control/debug
+and manually-created sessions, but are not the primary React live data path.
+Self-hosted clients may still use `POST /webrtc/offer`; Modal rejects that
+detached route so the peer cannot outlive its Function Call.
 
 The demo does not implement a DataChannel, candidate endpoint, TURN
 credentials, or multi-camera routing. It uses `stun:stun.l.google.com:19302` by default; set
@@ -165,7 +172,7 @@ new RTCPeerConnection({
 })
 ```
 
-It expects the browser to wait for ICE gathering to complete before posting
+It expects the browser to wait for ICE gathering to complete before sending
 the offer. An empty `WEBRTC_STUN_SERVERS` value disables server-side STUN;
 TURN URLs and credentials are deliberately rejected by this demo. If the
 optional media packages were not installed, the endpoint returns `503` with
@@ -173,15 +180,18 @@ code `webrtc_unavailable`.
 
 ### Modal WebRTC boundary
 
-The current API-only `deploy/modal_app.py` target is suitable for REST control
-and analytics. Do **not** claim that its plain ASGI `aiortc` offer route is
-production-ready WebRTC on Modal: Modal maps web requests to function-call
-lifetimes, and its documented WebRTC architecture uses a persistent WebSocket
-signaling function, a spawned `@app.cls` cloud peer, and TURN configuration
-when NAT/firewall traversal needs it. The FastAPI route is tested for
-local/self-hosted ASGI development; adding that Modal-specific peer/signaling
-adapter is a separate deployment task. See [Modal's WebRTC YOLO
-example](https://modal.com/docs/examples/webrtc_yolo).
+The React client uses `WebSocket /api/v1/webrtc/connect` for the complete SDP
+offer, SDP answer, and sequence-gated metadata push. That socket remains open
+for the peer lifetime, so Modal keeps the owning Function Call active instead
+of depending on an aiortc task after a POST response has returned. The Modal
+profile rejects the detached `POST /webrtc/offer` route; that compatibility
+route remains available for conventional self-hosted ASGI deployments.
+
+This is still a bounded one-container MVP, not a multi-peer Modal worker pool.
+STUN succeeds on many networks, while restrictive NAT/firewall environments
+need a managed TURN relay. See [Modal's WebRTC YOLO
+example](https://modal.com/docs/examples/webrtc_yolo) for the scalable spawned
+peer and TURN pattern.
 
 ## Short video fallback
 
@@ -190,13 +200,34 @@ Upload one short clip with `multipart/form-data`:
 ```bash
 curl -X POST http://127.0.0.1:8000/api/v1/video/analyze \
   -F "file=@sample.mp4;type=video/mp4" \
-  -F "mode=default"
+  -F "mode=default" \
+  -F "job_id=0123456789abcdef0123456789abcdef"
 ```
 
 The demo accepts `.mp4`, `.mov`, `.avi`, `.mkv`, and `.webm`, with default
-limits of 64 MiB, 60 seconds, and 1,800 frames.  It uses a fresh tracking
-state, returns final analytics and processing performance, deletes the source
-afterward, and does **not** retain or publish an annotated video artifact.
+limits of 64 MiB, 60 seconds, and 1,800 frames. The submit response is `202`
+with a `job_id` and `status_url`; inference and H.264 encoding continue in one
+background worker instead of keeping the response body open. On Modal the API
+spawns `Backend.run_video_job`, which has its own 900-second Function Call and
+shares the one-container T4 pool with the API. The browser still receives
+`202` immediately:
+
+```json
+{
+  "status": "queued",
+  "job_id": "opaque-id",
+  "status_url": "/api/v1/video/jobs/opaque-id",
+  "poll_after_ms": 1000
+}
+```
+
+Poll only that status URL. A completed snapshot contains final analytics,
+processing performance, and a short-lived annotated-video URL. The browser may
+leave the page and resume the same job without running inference again. Source
+uploads are deleted after processing; job snapshots are in-process and expire,
+so they do not survive an API restart. `job_id` is an optional opaque 20-64
+character idempotency token; retrying a submit with the same token returns the
+existing job instead of consuming another inference run.
 
 ## Demo boundaries
 
@@ -204,6 +235,5 @@ afterward, and does **not** retain or publish an annotated video artifact.
   `POST /reset`, session expiry, or `DELETE`.
 - A second live session is rejected with `429` until the first is closed or
   expires. This preserves tracker/session affinity on one demo GPU container.
-- No authentication, durable storage, video-job queue, TURN service,
-  Modal-specific WebRTC peer worker, or multi-camera scheduler is included at
-  this stage.
+- No authentication, durable job/storage service, TURN service, scalable
+  Modal peer pool, or multi-camera scheduler is included at this stage.

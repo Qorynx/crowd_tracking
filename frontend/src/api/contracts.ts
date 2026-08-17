@@ -25,6 +25,7 @@ export interface FrameMetadata {
 export interface OverlayTrack {
   track_id: number;
   person_id: number | null;
+  person_label?: string;
   label?: string;
   bbox: [number, number, number, number];
   gender?: string;
@@ -133,13 +134,37 @@ export interface WarmupStatusResponse {
   attributes_ready: boolean;
 }
 
+export interface VideoAnalysisArtifacts {
+  annotated_video_url: string | null;
+  annotated_video_filename?: string | null;
+  expires_in_seconds?: number | null;
+  note?: string;
+}
+
 export interface VideoAnalysisResponse {
   status: 'completed';
   mode: string;
   input: Record<string, any>;
   performance: Record<string, any>;
   analytics: AnalyticsPayload;
-  artifacts: Record<string, any>;
+  artifacts: VideoAnalysisArtifacts;
+}
+
+export interface VideoAnalysisJobAccepted {
+  status: 'queued';
+  job_id: string;
+  status_url: string;
+  poll_after_ms: number;
+}
+
+export interface VideoAnalysisJobStatus {
+  job_id: string;
+  status: 'queued' | 'processing' | 'completed' | 'failed';
+  progress: number;
+  stage: string;
+  message: string;
+  result: VideoAnalysisResponse | null;
+  error: ApiErrorDetail | null;
 }
 
 export interface WebRTCOfferResponse {

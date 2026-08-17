@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Spatial Analytics</title>
+<!-- Fonts -->
+<link href="https://fonts.googleapis.com" rel="preconnect"/>
+<link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet"/>
+<!-- Material Symbols -->
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<!-- Tailwind CSS -->
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<!-- Tailwind Configuration -->
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    "colors": {
+                        "surface-dim": "#071421",
+                        "surface-container-lowest": "#030f1c",
+                        "on-secondary-container": "#e6ecff",
+                        "on-surface": "#d6e4f7",
+                        "on-primary-fixed": "#001e2c",
+                        "surface-secondary": "#162131",
+                        "surface-primary": "#111A28",
+                        "success": "#22C55E",
+                        "on-primary-container": "#004965",
+                        "on-primary-fixed-variant": "#004c69",
+                        "primary-fixed": "#c4e7ff",
+                        "on-error": "#690005",
+                        "inverse-surface": "#d6e4f7",
+                        "on-error-container": "#ffdad6",
+                        "secondary-fixed": "#d8e2ff",
+                        "tertiary-fixed-dim": "#ffb960",
+                        "tertiary-fixed": "#ffddb8",
+                        "sidebar-bg": "#0D1420",
+                        "primary-container": "#38bdf8",
+                        "on-surface-variant": "#bdc8d1",
+                        "primary": "#8ed5ff",
+                        "on-secondary-fixed": "#001a42",
+                        "secondary-fixed-dim": "#adc6ff",
+                        "on-primary": "#00354a",
+                        "on-tertiary": "#472a00",
+                        "text-muted": "#718096",
+                        "surface-variant": "#293644",
+                        "surface-elevated": "#1A2637",
+                        "text-primary": "#F1F5F9",
+                        "inverse-primary": "#00668a",
+                        "surface-container-high": "#1e2b39",
+                        "on-secondary": "#002e6a",
+                        "border-strong": "#33445C",
+                        "on-secondary-fixed-variant": "#004395",
+                        "secondary-container": "#0566d9",
+                        "primary-fixed-dim": "#7bd0ff",
+                        "background": "#071421",
+                        "outline-variant": "#3e484f",
+                        "tertiary": "#ffc176",
+                        "surface-container-highest": "#293644",
+                        "secondary": "#adc6ff",
+                        "outline": "#87929a",
+                        "tertiary-container": "#f1a02b",
+                        "danger": "#EF4444",
+                        "on-tertiary-fixed-variant": "#653e00",
+                        "inverse-on-surface": "#253140",
+                        "app-bg": "#0A0F18",
+                        "border-default": "#243247",
+                        "error": "#ffb4ab",
+                        "surface-container-low": "#101c2a",
+                        "on-background": "#d6e4f7",
+                        "error-container": "#93000a",
+                        "surface": "#071421",
+                        "surface-container": "#14212e",
+                        "surface-bright": "#2e3a49",
+                        "on-tertiary-container": "#613b00",
+                        "on-tertiary-fixed": "#2a1700",
+                        "warning": "#F59E0B",
+                        "surface-tint": "#7bd0ff"
+                    },
+                    "borderRadius": {
+                        "DEFAULT": "0.25rem",
+                        "lg": "0.5rem",
+                        "xl": "0.75rem",
+                        "full": "9999px"
+                    },
+                    "spacing": {
+                        "card-padding": "20px",
+                        "unit": "4px",
+                        "margin-page": "32px",
+                        "gutter": "24px",
+                        "sidebar-width": "224px"
+                    },
+                    "fontFamily": {
+                        "display-lg": ["Inter", "sans-serif"],
+                        "body-sm": ["Inter", "sans-serif"],
+                        "technical-data": ["JetBrains Mono", "monospace"],
+                        "headline-sm": ["Inter", "sans-serif"],
+                        "title-md": ["Inter", "sans-serif"],
+                        "body-md": ["Inter", "sans-serif"],
+                        "display-md": ["Inter", "sans-serif"],
+                        "label-md": ["Inter", "sans-serif"]
+                    },
+                    "fontSize": {
+                        "display-lg": ["36px", { "lineHeight": "44px", "letterSpacing": "-0.02em", "fontWeight": "600" }],
+                        "body-sm": ["13px", { "lineHeight": "18px", "fontWeight": "400" }],
+                        "technical-data": ["12px", { "lineHeight": "16px", "fontWeight": "400" }],
+                        "headline-sm": ["20px", { "lineHeight": "28px", "fontWeight": "600" }],
+                        "title-md": ["16px", { "lineHeight": "24px", "fontWeight": "600" }],
+                        "body-md": ["14px", { "lineHeight": "20px", "fontWeight": "400" }],
+                        "display-md": ["28px", { "lineHeight": "36px", "letterSpacing": "-0.01em", "fontWeight": "600" }],
+                        "label-md": ["12px", { "lineHeight": "16px", "letterSpacing": "0.02em", "fontWeight": "500" }]
+                    }
+                }
+            }
+        }
+    </script>
+</head>
+<body class="bg-background text-text-primary font-body-md antialiased h-screen w-full overflow-hidden flex selection:bg-primary-container selection:text-on-primary-container">
+<!-- Shared Component: SideNavBar -->
+<nav class="bg-sidebar-bg fixed left-0 top-0 h-full w-[224px] flex flex-col h-full py-6 z-50 border-r border-border-default">
+<!-- Brand -->
+<div class="px-6 mb-8 flex flex-col gap-1">
+<h1 class="font-display-md text-display-md font-semibold text-primary tracking-tight">Crowd Analytics</h1>
+<span class="font-label-md text-label-md text-text-muted uppercase tracking-wider">Admin Console</span>
+</div>
+<!-- CTA -->
+<div class="px-6 mb-8">
+<button class="w-full bg-primary text-app-bg font-label-md text-label-md py-2 px-4 rounded hover:bg-primary-fixed transition-colors flex items-center justify-center gap-2">
+<span class="material-symbols-outlined text-[18px]" style="font-variation-settings: 'FILL' 1;">add</span>
+                New Analysis
+            </button>
+</div>
+<!-- Navigation Links -->
+<div class="flex-1 flex flex-col w-full">
+<a class="text-text-muted font-body-md hover:bg-surface-container-highest hover:text-text-primary transition-colors cursor-pointer active:opacity-80 transition-all flex items-center gap-3 px-6 py-3 w-full" href="#">
+<span class="material-symbols-outlined text-[20px]">dashboard</span>
+<span>Overview</span>
+</a>
+<a class="text-text-muted font-body-md hover:bg-surface-container-highest hover:text-text-primary transition-colors cursor-pointer active:opacity-80 transition-all flex items-center gap-3 px-6 py-3 w-full" href="#">
+<span class="material-symbols-outlined text-[20px]">videocam</span>
+<span>Live Monitor</span>
+</a>
+<!-- Active Tab: Analytics (Contextual mapping for Spatial Analytics) -->
+<a class="text-primary font-bold border-r-2 border-primary bg-surface-container-highest/50 cursor-pointer active:opacity-80 transition-all flex items-center gap-3 px-6 py-3 w-full" href="#">
+<span class="material-symbols-outlined text-[20px]" style="font-variation-settings: 'FILL' 1;">leaderboard</span>
+<span>Analytics</span>
+</a>
+<a class="text-text-muted font-body-md hover:bg-surface-container-highest hover:text-text-primary transition-colors cursor-pointer active:opacity-80 transition-all flex items-center gap-3 px-6 py-3 w-full" href="#">
+<span class="material-symbols-outlined text-[20px]">settings_input_component</span>
+<span>Room Setup</span>
+</a>
+<a class="text-text-muted font-body-md hover:bg-surface-container-highest hover:text-text-primary transition-colors cursor-pointer active:opacity-80 transition-all flex items-center gap-3 px-6 py-3 w-full" href="#">
+<span class="material-symbols-outlined text-[20px]">analytics</span>
+<span>Video Analysis</span>
+</a>
+<a class="text-text-muted font-body-md hover:bg-surface-container-highest hover:text-text-primary transition-colors cursor-pointer active:opacity-80 transition-all flex items-center gap-3 px-6 py-3 w-full" href="#">
+<span class="material-symbols-outlined text-[20px]">settings</span>
+<span>System</span>
+</a>
+</div>
+<!-- Footer Links -->
+<div class="mt-auto flex flex-col w-full pt-4">
+<a class="text-text-muted font-body-md hover:bg-surface-container-highest hover:text-text-primary transition-colors cursor-pointer active:opacity-80 transition-all flex items-center gap-3 px-6 py-3 w-full" href="#">
+<span class="material-symbols-outlined text-[20px]">help</span>
+<span>Support</span>
+</a>
+<a class="text-text-muted font-body-md hover:bg-surface-container-highest hover:text-text-primary transition-colors cursor-pointer active:opacity-80 transition-all flex items-center gap-3 px-6 py-3 w-full" href="#">
+<span class="material-symbols-outlined text-[20px]">logout</span>
+<span>Logout</span>
+</a>
+</div>
+</nav>
+<!-- Main Application Canvas -->
+<main class="flex-1 flex flex-col ml-[224px] h-full relative">
+<!-- Shared Component: TopNavBar -->
+<header class="bg-surface border-b border-border-default docked full-width top-0 flex justify-between items-center w-full px-margin-page h-16 z-40 shrink-0">
+<!-- Navigation Links (Active state contextualized) -->
+<nav class="flex h-full">
+<a class="h-full flex items-center px-2 mr-6 text-primary border-b-2 border-primary pb-1 font-title-md text-title-md cursor-pointer active:scale-95 duration-200" href="#">
+                    Classroom A
+                </a>
+</nav>
+<!-- Trailing Actions -->
+<div class="flex items-center gap-6">
+<!-- Trailing Primary Action -->
+<button class="bg-primary-container/10 text-primary border border-primary/30 rounded px-3 py-1.5 font-label-md text-label-md hover:bg-primary-container/20 transition-colors flex items-center gap-2">
+<span class="w-2 h-2 rounded-full bg-success shadow-[0_0_8px_rgba(34,197,94,0.5)]"></span>
+                    Live Status
+                </button>
+<!-- Trailing Secondary Action -->
+<button class="text-text-muted font-label-md text-label-md hover:text-primary transition-colors cursor-pointer active:scale-95 duration-200">
+                    EN/VN
+                </button>
+<!-- Icon Actions -->
+<div class="flex items-center gap-4 border-l border-border-default pl-6">
+<button class="text-text-muted hover:text-primary transition-colors cursor-pointer active:scale-95 duration-200 flex items-center justify-center">
+<span class="material-symbols-outlined">notifications</span>
+</button>
+<button class="text-text-muted hover:text-primary transition-colors cursor-pointer active:scale-95 duration-200 flex items-center justify-center relative w-8 h-8 rounded-full overflow-hidden border border-border-default bg-surface-secondary">
+<span class="material-symbols-outlined text-[20px] text-on-surface">account_circle</span>
+</button>
+</div>
+</div>
+</header>
+<!-- Page Content Canvas -->
+<div class="flex-1 overflow-y-auto p-margin-page pb-24">
+<!-- Contextual Navigation / Sub-header -->
+<div class="flex items-end justify-between mb-8 border-b border-border-default pb-px">
+<div class="flex gap-8">
+<a class="pb-3 text-primary border-b-2 border-primary font-title-md text-title-md tracking-tight" href="#">Spatial</a>
+<a class="pb-3 text-text-muted hover:text-on-surface transition-colors font-title-md text-title-md tracking-tight border-b-2 border-transparent" href="#">Attributes</a>
+</div>
+<!-- Time snapshot to reinforce no fake trends -->
+<div class="pb-3 font-technical-data text-technical-data text-text-muted flex items-center gap-2">
+<span class="material-symbols-outlined text-[14px]">schedule</span>
+                    Data Snapshot: Current Frame
+                </div>
+</div>
+<!-- Bento Grid Layout -->
+<div class="grid grid-cols-1 md:grid-cols-12 gap-gutter min-h-[600px]">
+<!-- Dominant Visual: Density Heatmap (Left/Main Panel - 8 cols) -->
+<section class="col-span-1 md:col-span-8 flex flex-col bg-surface-primary border border-border-default rounded-lg overflow-hidden shadow-sm">
+<!-- Header -->
+<header class="flex justify-between items-center p-card-padding border-b border-border-default bg-surface-elevated/50">
+<div class="flex flex-col gap-1">
+<h2 class="font-headline-sm text-headline-sm text-text-primary">Density Heatmap</h2>
+<p class="font-body-sm text-body-sm text-text-muted">Live spatial distribution analysis</p>
+</div>
+<div class="flex gap-2">
+<span class="px-2 py-1 bg-surface-secondary border border-border-strong rounded font-technical-data text-technical-data text-on-surface flex items-center gap-1">
+<span class="material-symbols-outlined text-[14px]">grid_on</span> Grid: 1m²
+                            </span>
+</div>
+</header>
+<!-- Visualization Canvas (Architectural Abstraction) -->
+<div class="flex-1 relative bg-surface-container-lowest overflow-hidden flex flex-col">
+<!-- Technical Grid Background -->
+<div class="absolute inset-0 z-0 opacity-10 pointer-events-none" style="background-image: linear-gradient(#243247 1px, transparent 1px), linear-gradient(90deg, #243247 1px, transparent 1px); background-size: 40px 40px;"></div>
+<!-- Room Boundary Abstraction -->
+<div class="absolute inset-8 border border-outline-variant/30 rounded-sm z-10 pointer-events-none">
+<!-- Entrance Indicator -->
+<div class="absolute bottom-[-1px] left-1/2 -translate-x-1/2 w-32 border-b-2 border-surface-container-lowest"></div>
+<span class="absolute bottom-[-24px] left-1/2 -translate-x-1/2 font-technical-data text-[10px] text-text-muted uppercase tracking-widest">Entry Point</span>
+<!-- Stage/Front Area Indicator -->
+<div class="absolute top-8 left-8 right-8 h-[1px] border-t border-dashed border-outline-variant/40"></div>
+<span class="absolute top-3 left-8 font-technical-data text-[10px] text-text-muted uppercase tracking-widest">Instruction Zone</span>
+</div>
+<!-- Heatmap Interpolation (CSS Based to avoid image requests) -->
+<div class="absolute inset-0 overflow-hidden mix-blend-screen z-20 pointer-events-none filter blur-[60px]">
+<!-- High Density (Amber) -->
+<div class="absolute top-[20%] left-[30%] w-64 h-48 bg-tertiary-container rounded-[100%] opacity-70 transform -rotate-12"></div>
+<div class="absolute top-[35%] left-[45%] w-72 h-56 bg-tertiary-container rounded-[100%] opacity-60"></div>
+<!-- Medium Density (Cyan/Blue mix) -->
+<div class="absolute top-[30%] left-[20%] w-96 h-80 bg-surface-tint rounded-[100%] opacity-50"></div>
+<div class="absolute top-[50%] left-[40%] w-80 h-72 bg-surface-tint rounded-[100%] opacity-40"></div>
+<!-- Low Density (Deep Blue) -->
+<div class="absolute top-[10%] right-[10%] w-[400px] h-[300px] bg-primary rounded-[100%] opacity-20"></div>
+<div class="absolute bottom-[20%] left-[10%] w-[500px] h-[400px] bg-primary rounded-[100%] opacity-15"></div>
+<div class="absolute bottom-[10%] right-[20%] w-[350px] h-[250px] bg-primary rounded-[100%] opacity-25"></div>
+</div>
+<!-- Crosshair / Reticle for technical feel -->
+<div class="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-8 h-8 pointer-events-none z-30 opacity-30 flex items-center justify-center">
+<div class="absolute w-full h-[1px] bg-primary"></div>
+<div class="absolute h-full w-[1px] bg-primary"></div>
+</div>
+</div>
+<!-- Technical Legend Footer -->
+<footer class="p-4 border-t border-border-default bg-surface-secondary flex items-center justify-between">
+<span class="font-label-md text-label-md text-text-muted uppercase tracking-wider">Density Interpolation</span>
+<div class="flex items-center gap-4">
+<span class="font-technical-data text-technical-data text-on-surface">Low</span>
+<div class="w-48 h-2 rounded-full overflow-hidden flex">
+<div class="h-full flex-1 bg-primary opacity-30"></div>
+<div class="h-full flex-1 bg-surface-tint opacity-60"></div>
+<div class="h-full flex-1 bg-tertiary-container opacity-90"></div>
+</div>
+<span class="font-technical-data text-technical-data text-on-surface">High</span>
+</div>
+</footer>
+</section>
+<!-- Right Side Panel: Asymmetrical Zone Data (4 cols) -->
+<aside class="col-span-1 md:col-span-4 flex flex-col gap-gutter">
+<!-- Structural wrapper for cohesive panel feel -->
+<div class="bg-surface-secondary border border-border-default rounded-lg p-card-padding flex-1 flex flex-col relative overflow-hidden">
+<!-- Subtle architectural background element -->
+<div class="absolute top-0 right-0 w-32 h-32 bg-surface-elevated rounded-bl-full opacity-20 pointer-events-none"></div>
+<header class="mb-8">
+<h3 class="font-title-md text-title-md text-text-primary mb-1">Zone Distribution</h3>
+<p class="font-body-sm text-body-sm text-text-muted">Current occupancy by designated area</p>
+</header>
+<!-- Asymmetrical List (No standard cards) -->
+<div class="flex flex-col gap-8 flex-1">
+<!-- Zone Item: Front Rows -->
+<div class="group relative">
+<div class="flex justify-between items-baseline mb-3">
+<div class="flex items-center gap-2">
+<div class="w-1.5 h-1.5 rounded-full bg-tertiary-container"></div>
+<span class="font-body-md text-body-md text-on-surface font-medium">Front Rows</span>
+</div>
+<!-- Concrete count, no comparison percentage -->
+<span class="font-technical-data text-[18px] text-text-primary">48</span>
+</div>
+<!-- Simple horizontal bar -->
+<div class="w-full bg-surface-primary h-[4px] rounded-full overflow-hidden border border-border-default/50">
+<div class="bg-tertiary-container h-full w-[85%] rounded-full shadow-[0_0_8px_rgba(241,160,43,0.3)]"></div>
+</div>
+</div>
+<!-- Zone Item: Middle Area -->
+<div class="group relative">
+<div class="flex justify-between items-baseline mb-3">
+<div class="flex items-center gap-2">
+<div class="w-1.5 h-1.5 rounded-full bg-surface-tint"></div>
+<span class="font-body-md text-body-md text-on-surface font-medium">Middle Area</span>
+</div>
+<span class="font-technical-data text-[18px] text-text-primary">32</span>
+</div>
+<div class="w-full bg-surface-primary h-[4px] rounded-full overflow-hidden border border-border-default/50">
+<div class="bg-surface-tint h-full w-[55%] rounded-full"></div>
+</div>
+</div>
+<!-- Zone Item: Back Rows -->
+<div class="group relative">
+<div class="flex justify-between items-baseline mb-3">
+<div class="flex items-center gap-2">
+<div class="w-1.5 h-1.5 rounded-full bg-primary/60"></div>
+<span class="font-body-md text-body-md text-on-surface font-medium">Back Rows</span>
+</div>
+<span class="font-technical-data text-[18px] text-text-primary">14</span>
+</div>
+<div class="w-full bg-surface-primary h-[4px] rounded-full overflow-hidden border border-border-default/50">
+<div class="bg-primary h-full w-[25%] rounded-full opacity-80"></div>
+</div>
+</div>
+</div>
+<!-- Total Aggregation Block (Bottom of panel) -->
+<div class="mt-auto pt-6 border-t border-border-default">
+<div class="flex justify-between items-end">
+<span class="font-label-md text-label-md text-text-muted uppercase tracking-wider">Total Headcount</span>
+<span class="font-display-md text-display-md font-bold text-text-primary leading-none">94</span>
+</div>
+</div>
+</div>
+</aside>
+</div>
+</div>
+<!-- Global Status Footer (Fixed to bottom of main canvas) -->
+<div class="absolute bottom-0 left-0 right-0 px-margin-page py-3 bg-surface border-t border-border-default flex justify-end items-center z-40 shadow-[0_-10px_30px_rgba(0,0,0,0.2)]">
+<div class="flex items-center gap-2">
+<span class="relative flex h-2 w-2">
+<span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-success opacity-75"></span>
+<span class="relative inline-flex rounded-full h-2 w-2 bg-success"></span>
+</span>
+<span class="font-technical-data text-technical-data text-text-muted uppercase tracking-widest">Monitoring Active</span>
+</div>
+</div>
+</main>
+</body></html>

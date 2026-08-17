@@ -8,13 +8,13 @@ from datetime import datetime
 import math
 from pathlib import Path
 from time import monotonic
-from typing import Any
+from typing import Any, Callable
 
 import cv2
 import numpy as np
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
 
 from src.api.config import ApiSettings
@@ -29,7 +29,8 @@ from src.api.contracts import (
     SessionLayoutRequest,
     SessionStatsResponse,
     WarmupStatusResponse,
-    VideoAnalysisResponse,
+    VideoJobAcceptedResponse,
+    VideoJobStatusResponse,
 )
 from src.api.sessions import (
     ApiSessionError,
@@ -44,7 +45,11 @@ from src.api.sessions import (
 )
 from src.api.video import (
     ShortVideoAnalyzer,
+    VideoArtifactNotFoundError,
+    VideoArtifactStore,
     VideoAnalysisBusyError,
+    VideoJobManager,
+    VideoJobNotFoundError,
     UnsupportedVideoError,
     VideoAnalysisError,
     VideoAnalyzer,
@@ -76,12 +81,16 @@ def create_api_app(
     settings: ApiSettings | None = None,
     session_manager: SessionManager | None = None,
     video_analyzer: VideoAnalyzer | None = None,
+    warmup_scheduler: Callable[[str], None] | None = None,
+    video_job_scheduler: Callable[[str], None] | None = None,
 ) -> FastAPI:
     """Create the API without loading a model until a session/job is requested.
 
     ``session_manager`` and ``video_analyzer`` are explicit injection points for
-    tests, hardware-specific runtimes, and the WebRTC adapter.  This keeps the
-    REST layer free from singleton model state at import time.
+    tests, hardware-specific runtimes, and the WebRTC adapter. Optional
+    schedulers let serverless deployments run warmup/video work in dedicated
+    calls while retaining the same in-process state owner. This keeps the REST
+    layer free from singleton model state at import time.
     """
 
     effective_settings = settings or ApiSettings.from_environment()
@@ -118,7 +127,29 @@ def create_api_app(
         max_seconds=effective_settings.max_video_seconds,
         max_frames=effective_settings.max_video_frames,
     )
+    video_artifacts = VideoArtifactStore()
+    video_jobs = VideoJobManager(
+        analyzer,
+        video_artifacts,
+        max_bytes=effective_settings.max_video_bytes,
+        artifact_url_prefix=f"{API_PREFIX}/video/artifacts",
+    )
     webrtc_peers = WebRTCPeerRegistry(manager)
+
+    def prepare_live_gpu_owner() -> None:
+        """Prevent live and upload workflows from retaining two model caches."""
+
+        if video_jobs.is_busy():
+            raise HTTPException(
+                status_code=429,
+                detail={
+                    "code": "video_analysis_busy",
+                    "message": "Wait for the active video analysis job before starting Live Monitor.",
+                },
+            )
+        close_video_cache = getattr(analyzer, "close", None)
+        if callable(close_video_cache):
+            close_video_cache()
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -127,7 +158,7 @@ def create_api_app(
         # browser click can claim an already-prepared detector/tracker. Injected
         # managers (tests, notebooks, alternate deployments) keep explicit
         # lifecycle control and are never warmed implicitly.
-        if owns_session_manager:
+        if owns_session_manager and effective_settings.warm_on_start:
             manager.start_warmup("classroom_demo")
         try:
             yield
@@ -140,9 +171,13 @@ def create_api_app(
             # releases any REST-only sessions that have no peer record.
             await webrtc_peers.close_all()
             manager.close_all()
+            # Let an accepted upload finish before releasing its warm model or
+            # short-lived artifact directory.
+            video_jobs.close()
             close_analyzer = getattr(analyzer, "close", None)
             if callable(close_analyzer):
                 close_analyzer()
+            video_artifacts.close()
 
     app = FastAPI(
         title="Crowd Analytics Demo API",
@@ -163,11 +198,17 @@ def create_api_app(
     app.state.api_settings = effective_settings
     app.state.session_manager = manager
     app.state.video_analyzer = analyzer
+    app.state.video_artifacts = video_artifacts
+    app.state.video_jobs = video_jobs
     app.state.webrtc_peers = webrtc_peers
     app.include_router(
         create_webrtc_router(
             manager,
             registry=webrtc_peers,
+            metadata_payload_factory=lambda session_id: _session_stats_payload(manager, session_id),
+            allowed_websocket_origins=effective_settings.frontend_origins,
+            allow_detached_offer=not effective_settings.require_webrtc_lifecycle_socket,
+            session_start_guard=prepare_live_gpu_owner,
             session_ttl_seconds=(
                 int(effective_settings.session_ttl_seconds)
                 if effective_settings.session_ttl_seconds > 0.0
@@ -220,6 +261,10 @@ def create_api_app(
     async def video_error_handler(_request, exc: VideoAnalysisError) -> JSONResponse:
         return _error_response(422, "video_analysis_failed", str(exc))
 
+    @app.exception_handler(VideoJobNotFoundError)
+    async def video_job_not_found_handler(_request, exc: VideoJobNotFoundError) -> JSONResponse:
+        return _error_response(404, "video_job_not_found", str(exc))
+
     @app.get(f"{API_PREFIX}/health", response_model=HealthResponse, tags=["service"])
     def health() -> HealthResponse:
         """Liveness check: does not initialize a pipeline or a GPU model."""
@@ -251,7 +296,11 @@ def create_api_app(
     def start_model_warmup(request: CreateSessionRequest) -> WarmupStatusResponse:
         """Start idempotent background model preparation for a live mode."""
 
-        status = manager.start_warmup(request.mode)
+        prepare_live_gpu_owner()
+        defer_warmup = warmup_scheduler is not None
+        status = manager.start_warmup(request.mode, start_immediately=not defer_warmup)
+        if warmup_scheduler is not None:
+            warmup_scheduler(request.mode)
         return WarmupStatusResponse.model_validate(_json_safe(status))
 
     @app.get(
@@ -275,6 +324,7 @@ def create_api_app(
     def create_session(request: CreateSessionRequest) -> SessionEnvelope:
         """Create the one persistent tracker/person-ID state for a media peer."""
 
+        prepare_live_gpu_owner()
         session = manager.create_session(request.mode, request.camera_id)
         return SessionEnvelope.model_validate(_json_safe({"status": "created", "session": session.to_dict()}))
 
@@ -331,7 +381,13 @@ def create_api_app(
         except WebSocketDisconnect:
             return
         except SessionNotFoundError:
-            await websocket.close(code=4404, reason="Session expired")
+            # The browser may have closed the socket while the session was
+            # being released by the WebRTC peer callback. Closing an already
+            # disconnected socket must not become an ASGI worker traceback.
+            try:
+                await websocket.close(code=4404, reason="Session expired")
+            except WebSocketDisconnect:
+                return
         except Exception:
             # A browser/tab disconnect commonly surfaces as a transport-level
             # exception.  Do not turn it into an ASGI worker error.
@@ -401,8 +457,16 @@ def create_api_app(
         tags=["sessions"],
     )
     async def delete_session(session_id: str) -> Response:
-        await webrtc_peers.close_peer(session_id)
-        manager.close(session_id)
+        peer_closed = await webrtc_peers.close_peer(session_id)
+        try:
+            manager.close(session_id)
+        except SessionNotFoundError:
+            # Closing an aiortc peer emits ``connectionstatechange``. Its
+            # callback can release the same tracker before this endpoint gets
+            # to manager.close(), so treat that already-completed cleanup as
+            # idempotent while preserving 404 for truly unknown sessions.
+            if not peer_closed:
+                raise
         return Response(status_code=204)
 
     @app.post(
@@ -461,33 +525,84 @@ def create_api_app(
 
     @app.post(
         f"{API_PREFIX}/video/analyze",
-        response_model=VideoAnalysisResponse,
+        response_model=VideoJobAcceptedResponse,
         responses={413: {"model": ErrorEnvelope}, 415: {"model": ErrorEnvelope}, 422: {"model": ErrorEnvelope}, 429: {"model": ErrorEnvelope}},
+        status_code=202,
         tags=["video"],
     )
     def analyze_short_video(
         file: UploadFile = File(..., description="Short video clip; default demo limit is 60 seconds / 64 MiB."),
         mode: str = Form("default"),
-    ) -> VideoAnalysisResponse:
-        """Synchronous short-clip fallback; it never changes a live session's tracker."""
+        job_id: str | None = Form(default=None, description="Optional client-generated idempotency token."),
+    ) -> VideoJobAcceptedResponse:
+        """Accept a clip, then run inference independently of this request."""
 
         # A clip uses a reset tracker/analytics state with warm model weights.
         # The demo intentionally has one GPU/session budget, so do not compete
-        # with an active WebRTC or REST live stream. Modal additionally
-        # serializes requests at one input; this check gives other ASGI
-        # deployments the same safe signal.
+        # with an active WebRTC or REST live stream. The explicit guard keeps
+        # that ownership rule intact even though lightweight ASGI inputs are
+        # concurrent on Modal.
         active_sessions = int(manager.health().get("active_sessions", 0))
         if active_sessions:
             raise VideoAnalysisBusyError(
                 "Close the active live session before running short-video analysis in the one-GPU demo."
             )
-        result = analyzer.analyze(
+        # A stopped live session leaves one warm pipeline cached for fast
+        # restart. Release it before loading the separate video-analysis cache,
+        # otherwise one T4 can retain two complete model stacks.
+        manager.release_warm_pipelines()
+        job_id = video_jobs.submit(
             file.file,
             filename=file.filename,
             content_type=file.content_type,
             mode=mode,
+            job_id=job_id,
+            start_immediately=video_job_scheduler is None,
         )
-        return VideoAnalysisResponse.model_validate(_json_safe(result))
+        if video_job_scheduler is not None:
+            video_job_scheduler(job_id)
+        status_url = f"{API_PREFIX}/video/jobs/{job_id}"
+        return VideoJobAcceptedResponse(
+            status="queued",
+            job_id=job_id,
+            status_url=status_url,
+            poll_after_ms=1_000,
+        )
+
+    @app.get(
+        f"{API_PREFIX}/video/jobs/{{job_id}}",
+        response_model=VideoJobStatusResponse,
+        responses={404: {"model": ErrorEnvelope}},
+        tags=["video"],
+    )
+    def get_video_job(job_id: str) -> VideoJobStatusResponse:
+        """Return a small status snapshot; polling never reruns inference."""
+
+        return VideoJobStatusResponse.model_validate(_json_safe(video_jobs.get(job_id)))
+
+    @app.get(
+        f"{API_PREFIX}/video/artifacts/{{artifact_id}}",
+        responses={404: {"model": ErrorEnvelope}},
+        tags=["video"],
+    )
+    def get_annotated_video(artifact_id: str) -> FileResponse:
+        """Stream one short-lived, browser-compatible annotated MP4."""
+
+        try:
+            artifact_path = video_artifacts.get(artifact_id)
+        except VideoArtifactNotFoundError as error:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "annotated_video_not_found", "message": str(error)},
+            ) from error
+        return FileResponse(
+            artifact_path,
+            media_type="video/mp4",
+            headers={
+                "Cache-Control": "private, max-age=900",
+                "Content-Disposition": f'inline; filename="annotated-{artifact_id}.mp4"',
+            },
+        )
 
     return app
 

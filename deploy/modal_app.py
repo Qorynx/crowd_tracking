@@ -14,6 +14,7 @@ profiles even if they remain in the local workspace.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -65,7 +66,7 @@ def _required_local_assets(project_root: Path = PROJECT_ROOT) -> dict[str, Path]
         )
 
     root = project_root.resolve()
-    by_id: dict[str, Path] = {}
+    by_id: dict[str, tuple[Path, dict[str, object]]] = {}
     for entry in entries:
         if not isinstance(entry, dict):
             continue
@@ -81,13 +82,13 @@ def _required_local_assets(project_root: Path = PROJECT_ROOT) -> dict[str, Path]
             resolved.relative_to(root)
         except ValueError:
             continue
-        by_id[asset_id] = resolved
+        by_id[asset_id] = (resolved, entry)
 
     absent_from_manifest = [asset_id for asset_id in _REQUIRED_MODEL_ASSET_IDS if asset_id not in by_id]
     missing_files = [
-        f"{asset_id}: {by_id[asset_id]}"
+        f"{asset_id}: {by_id[asset_id][0]}"
         for asset_id in _REQUIRED_MODEL_ASSET_IDS
-        if asset_id in by_id and not by_id[asset_id].is_file()
+        if asset_id in by_id and not by_id[asset_id][0].is_file()
     ]
     if absent_from_manifest or missing_files:
         details = [
@@ -99,7 +100,32 @@ def _required_local_assets(project_root: Path = PROJECT_ROOT) -> dict[str, Path]
             + "\n".join(f"- {detail}" for detail in details)
             + f"\nRun `{PRODUCTION_ASSET_BOOTSTRAP_COMMAND}` and retry `modal deploy deploy/modal_app.py`."
         )
-    return {asset_id: by_id[asset_id] for asset_id in _REQUIRED_MODEL_ASSET_IDS}
+
+    invalid_files: list[str] = []
+    for asset_id in _REQUIRED_MODEL_ASSET_IDS:
+        path, entry = by_id[asset_id]
+        expected_size = entry.get("size_bytes")
+        expected_sha256 = entry.get("sha256")
+        if not isinstance(expected_size, int) or expected_size < 1:
+            invalid_files.append(f"{asset_id}: missing valid size_bytes")
+            continue
+        if not isinstance(expected_sha256, str) or len(expected_sha256) != 64:
+            invalid_files.append(f"{asset_id}: missing valid sha256")
+            continue
+        if path.stat().st_size != expected_size:
+            invalid_files.append(f"{asset_id}: file size does not match the production manifest")
+            continue
+        with path.open("rb") as stream:
+            digest = hashlib.file_digest(stream, "sha256").hexdigest()
+        if digest.lower() != expected_sha256.lower():
+            invalid_files.append(f"{asset_id}: sha256 does not match the production manifest")
+    if invalid_files:
+        raise ValueError(
+            "Required production model assets failed integrity validation:\n"
+            + "\n".join(f"- {detail}" for detail in invalid_files)
+            + f"\nRun `{PRODUCTION_ASSET_BOOTSTRAP_COMMAND}` and retry `modal deploy deploy/modal_app.py`."
+        )
+    return {asset_id: by_id[asset_id][0] for asset_id in _REQUIRED_MODEL_ASSET_IDS}
 
 
 def _runtime_image() -> modal.Image:
@@ -121,12 +147,23 @@ def _runtime_image() -> modal.Image:
         .env(
             {
                 "PIPELINE_CONFIG": f"{REMOTE_ROOT}/configs/pipeline-live.yaml",
+                "CLASSROOM_PIPELINE_CONFIG": f"{REMOTE_ROOT}/configs/pipeline-classroom-template.yaml",
                 "GENDER_MODEL_PATH": f"{REMOTE_ROOT}/artifacts/gender_classifier/face_gender_classifier_mobilenet_v3_large.pth",
                 # API-only Modal deployment: one manager owns the one active
                 # pipeline. `app.py` is intentionally not mounted here.
                 "API_MAX_LIVE_SESSIONS": "1",
                 "API_SESSION_TTL_SECONDS": "600",
+                # Do not initialize GPU models for health/readiness requests.
+                # The frontend explicitly starts one idempotent warmup before
+                # opening the camera.
+                "API_WARM_ON_START": "false",
                 "LIVE_STREAM_EVERY_SECONDS": "0.15",
+                # A persistent signaling/metadata WebSocket owns the aiortc
+                # peer lifetime on Modal. Detached POST-only peers are not
+                # allowed in this deployment profile.
+                "WEBRTC_REQUIRE_LIFECYCLE_SOCKET": "true",
+                "WEBRTC_STUN_SERVERS": "stun:stun.l.google.com:19302",
+                "FRONTEND_INCLUDE_LOCAL_ORIGINS": "false",
                 "YOLO_CONFIG_DIR": "/tmp/ultralytics",
             }
         )
@@ -184,25 +221,64 @@ def _runtime_image() -> modal.Image:
 
 app = modal.App("crowd-analytics-mvp")
 image = _runtime_image()
+production_config = modal.Secret.from_name(
+    "crowd-analytics-production",
+    required_keys=["FRONTEND_ORIGINS"],
+)
 
 
-@app.function(
+@app.cls(
     image=image,
     gpu="T4",
     timeout=900,
     max_containers=1,
-    scaledown_window=600,
+    scaledown_window=180,
+    secrets=[production_config],
 )
-@modal.concurrent(max_inputs=1)
-@modal.asgi_app()
-def web():
-    """Serve the API-only Modal deployment.
+@modal.concurrent(max_inputs=8)
+class Backend:
+    """One stateful T4 pool for web, warmup, live WebRTC, and video jobs."""
 
-    The FastAPI session manager is the sole owner of the T4's live pipeline,
-    preserving FastTracker and session-scoped person-ID continuity.  The
-    The React dashboard is deployed independently from the `frontend/` root.
-    """
+    def _get_api(self):
+        api = getattr(self, "_api", None)
+        if api is not None:
+            return api
 
-    from src.api.app import create_api_app
+        from src.api.app import create_api_app
 
-    return create_api_app()
+        def spawn_warmup(mode: str) -> None:
+            Backend().run_warmup.spawn(mode)
+
+        def spawn_video_job(job_id: str) -> None:
+            Backend().run_video_job.spawn(job_id)
+
+        api = create_api_app(
+            warmup_scheduler=spawn_warmup,
+            video_job_scheduler=spawn_video_job,
+        )
+        self._api = api
+        return api
+
+    @modal.method()
+    def run_warmup(self, mode: str) -> None:
+        """Keep model initialization inside a dedicated Modal Function Call."""
+
+        self._get_api().state.session_manager.run_warmup(mode)
+
+    @modal.method()
+    def run_video_job(self, job_id: str) -> None:
+        """Run inference/encoding beyond the web endpoint's timeout window."""
+
+        self._get_api().state.video_jobs.run(job_id)
+
+    @modal.asgi_app(label="web")
+    def web(self):
+        """Serve the API-only Modal deployment.
+
+        The FastAPI session manager is the sole owner of the T4's live
+        pipeline, preserving FastTracker and session-scoped person-ID
+        continuity. The React dashboard is deployed independently from the
+        `frontend/` root.
+        """
+
+        return self._get_api()

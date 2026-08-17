@@ -1,6 +1,30 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Armchair, Save, Crosshair, Plus, Minus, RotateCcw, AlertCircle } from 'lucide-react';
-import { CrowdApiError, getApiErrorMessage, getSessionStats, updateSessionCalibration, updateSessionLayout } from '../api/crowdApi';
+import {
+  Armchair,
+  Crosshair,
+  Save,
+  RotateCcw,
+  AlertCircle,
+  CheckCircle2,
+  Minus,
+  Plus,
+  ChevronRight,
+} from 'lucide-react';
+import {
+  CrowdApiError,
+  getApiErrorMessage,
+  getSessionStats,
+  updateSessionCalibration,
+  updateSessionLayout,
+} from '@/api/crowdApi';
+import { Button } from '@/components/ui/button';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 
 interface RoomSetupPageProps {
   t: any;
@@ -23,6 +47,8 @@ interface ClassroomSnapshot {
 }
 
 const DEFAULT_CLASSROOM: ClassroomSnapshot = {};
+const DEFAULT_TEMPLATE = 'lecture_2_4_2';
+const TEMPLATE_OPTIONS = [{ value: DEFAULT_TEMPLATE, label: '2-4-2' }];
 
 function seatId(row: number, block: string, column: number): string {
   return `r${row}-${block}-c${column}`;
@@ -39,11 +65,21 @@ function buildSeats(layout: Record<string, any>, disabled: Set<string>, liveSeat
       row: Number(seat.row),
       block: String(seat.block),
       column: Number(seat.column),
-      status: String(seat.status || (seat.enabled === false ? 'disabled' : 'vacant')),
+      status: disabled.has(disabledKey({
+        row: Number(seat.row),
+        block: String(seat.block),
+        column: Number(seat.column),
+      }))
+        ? 'disabled'
+        : ['occupied', 'pending', 'uncertain'].includes(String(seat.status))
+          ? String(seat.status)
+          : 'vacant',
     }));
   }
-  const rows = Number(layout.rows) || 0;
-  const blockColumns = layout.block_columns && typeof layout.block_columns === 'object' ? layout.block_columns : {};
+  const rows = Number(layout.rows) || 4;
+  const blockColumns = layout.block_columns && typeof layout.block_columns === 'object'
+    ? layout.block_columns
+    : { left: 2, center: 4, right: 2 };
   const blocks = Array.isArray(layout.blocks) ? layout.blocks.map(String) : Object.keys(blockColumns);
   const seats: RoomSeat[] = [];
   for (let row = 1; row <= rows; row += 1) {
@@ -51,7 +87,13 @@ function buildSeats(layout: Record<string, any>, disabled: Set<string>, liveSeat
       const columns = Number(blockColumns[block]) || 0;
       for (let column = 1; column <= columns; column += 1) {
         const key = disabledKey({ row, block, column });
-        seats.push({ id: seatId(row, block, column), row, block, column, status: disabled.has(key) ? 'disabled' : 'vacant' });
+        seats.push({
+          id: seatId(row, block, column),
+          row,
+          block,
+          column,
+          status: disabled.has(key) ? 'disabled' : 'vacant',
+        });
       }
     });
   }
@@ -61,12 +103,12 @@ function buildSeats(layout: Record<string, any>, disabled: Set<string>, liveSeat
 export const RoomSetupPage: React.FC<RoomSetupPageProps> = ({ t, sessionId }) => {
   const [tab, setTab] = useState<'layout' | 'calibration'>('layout');
   const [classroom, setClassroom] = useState<ClassroomSnapshot>(DEFAULT_CLASSROOM);
-  const [rows, setRows] = useState(0);
+  const [rows, setRows] = useState(4);
+  const [template, setTemplate] = useState(DEFAULT_TEMPLATE);
   const [disabled, setDisabled] = useState<Set<string>>(new Set());
   const [calibrationPoints, setCalibrationPoints] = useState<Array<[number, number]>>([]);
   const [floorWidthM, setFloorWidthM] = useState(8);
   const [floorDepthM, setFloorDepthM] = useState(8);
-  const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -74,12 +116,21 @@ export const RoomSetupPage: React.FC<RoomSetupPageProps> = ({ t, sessionId }) =>
 
   const applySnapshot = useCallback((snapshot: ClassroomSnapshot) => {
     setClassroom(snapshot);
-    const layout = snapshot.layout || {};
-    setRows(Number(layout.rows) || 0);
-    const disabledValues = Array.isArray(layout.disabled_seats) ? layout.disabled_seats : [];
-    setDisabled(new Set(disabledValues.map((value: any) => disabledKey({
-      row: Number(value.row), block: String(value.block), column: Number(value.column),
-    }))));
+    const layoutObj = snapshot.layout || {};
+    if (layoutObj.rows) setRows(Number(layoutObj.rows) || 4);
+    if (layoutObj.template) setTemplate(String(layoutObj.template));
+    const disabledValues = Array.isArray(layoutObj.disabled_seats) ? layoutObj.disabled_seats : [];
+    setDisabled(
+      new Set(
+        disabledValues.map((value: any) =>
+          disabledKey({
+            row: Number(value.row),
+            block: String(value.block),
+            column: Number(value.column),
+          })
+        )
+      )
+    );
     const calibration = snapshot.room?.calibration;
     if (calibration && Array.isArray(calibration.floor_points_px)) {
       setCalibrationPoints(calibration.floor_points_px as Array<[number, number]>);
@@ -91,42 +142,58 @@ export const RoomSetupPage: React.FC<RoomSetupPageProps> = ({ t, sessionId }) =>
     }
   }, []);
 
-  const loadSnapshot = useCallback(async () => {
+  const resetDraft = useCallback(() => {
+    setClassroom(DEFAULT_CLASSROOM);
+    setRows(4);
+    setTemplate(DEFAULT_TEMPLATE);
+    setDisabled(new Set());
+    setCalibrationPoints([]);
+    setFloorWidthM(8);
+    setFloorDepthM(8);
+    setMessage(null);
+    setErrorMessage(null);
+  }, []);
+
+  const loadSnapshot = useCallback(async (signal?: AbortSignal) => {
     if (!sessionId) {
-      setClassroom(DEFAULT_CLASSROOM);
-      setRows(0);
-      setDisabled(new Set());
-      setCalibrationPoints([]);
+      resetDraft();
       return;
     }
-    setLoading(true);
+    resetDraft();
     setErrorMessage(null);
     try {
-      const response = await getSessionStats(sessionId);
-      applySnapshot((response.analytics?.classroom || {}) as ClassroomSnapshot);
-    } catch (error) {
-      if (!(error instanceof CrowdApiError && error.status === 404)) {
-        setErrorMessage(getApiErrorMessage(error, 'Unable to load classroom configuration.'));
+      const response = await getSessionStats(sessionId, signal);
+      const classroomSnapshot = response.analytics?.classroom;
+      if (classroomSnapshot && typeof classroomSnapshot === 'object') {
+        applySnapshot(classroomSnapshot as ClassroomSnapshot);
       }
-    } finally {
-      setLoading(false);
+    } catch (error) {
+      if (signal?.aborted) return;
+      if (!(error instanceof CrowdApiError && error.status === 404)) {
+        setErrorMessage(getApiErrorMessage(error, 'Unable to load room configuration.'));
+      }
     }
-  }, [applySnapshot, sessionId]);
+  }, [applySnapshot, resetDraft, sessionId]);
 
-  useEffect(() => { void loadSnapshot(); }, [loadSnapshot]);
+  useEffect(() => {
+    const controller = new AbortController();
+    void loadSnapshot(controller.signal);
+    return () => controller.abort();
+  }, [loadSnapshot]);
 
   const layout = useMemo(() => classroom.layout || {}, [classroom.layout]);
   const room = useMemo(() => classroom.room || {}, [classroom.room]);
   const seats = useMemo(
     () => buildSeats(layout, disabled, Array.isArray(classroom.seats?.seats) ? classroom.seats.seats : []),
-    [classroom.seats, disabled, layout],
+    [classroom.seats, disabled, layout]
   );
-  const blocks = Array.isArray(layout.blocks) ? layout.blocks.map(String) : Object.keys(layout.block_columns || {});
-  const enabledSeatCount = seats.filter((seat) => seat.status !== 'disabled').length;
-  const totalSeatCount = seats.length || Number(layout.capacity?.total_seats) || 0;
+  const blocks = Array.isArray(layout.blocks)
+    ? layout.blocks.map(String)
+    : Object.keys(layout.block_columns || { left: 2, center: 4, right: 2 });
+  const totalSeatCount = seats.length || Number(layout.capacity?.total_seats) || rows * 8;
   const referenceResolution = useMemo(
-    () => Array.isArray(layout.reference_resolution) ? layout.reference_resolution : [640, 480],
-    [layout.reference_resolution],
+    () => (Array.isArray(layout.reference_resolution) ? layout.reference_resolution : [640, 480]),
+    [layout.reference_resolution]
   );
 
   useEffect(() => {
@@ -135,62 +202,82 @@ export const RoomSetupPage: React.FC<RoomSetupPageProps> = ({ t, sessionId }) =>
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.fillStyle = '#071120';
+    ctx.fillStyle = '#071421';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
-    ctx.strokeStyle = 'rgba(56, 189, 248, 0.22)';
+    ctx.strokeStyle = 'rgba(56, 189, 248, 0.15)';
     ctx.lineWidth = 1;
-    for (let x = 0; x <= canvas.width; x += 80) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, canvas.height); ctx.stroke(); }
-    for (let y = 0; y <= canvas.height; y += 60) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvas.width, y); ctx.stroke(); }
+    for (let x = 0; x <= canvas.width; x += 80) {
+      ctx.beginPath();
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, canvas.height);
+      ctx.stroke();
+    }
+    for (let y = 0; y <= canvas.height; y += 60) {
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(canvas.width, y);
+      ctx.stroke();
+    }
     if (calibrationPoints.length >= 2) {
       ctx.beginPath();
       calibrationPoints.forEach(([x, y], index) => {
         const px = (x / Number(referenceResolution[0])) * canvas.width;
         const py = (y / Number(referenceResolution[1])) * canvas.height;
-        if (index === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+        if (index === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
       });
       if (calibrationPoints.length === 4) ctx.closePath();
-      ctx.strokeStyle = '#22d3ee';
-      ctx.lineWidth = 3;
+      ctx.strokeStyle = '#38bdf8';
+      ctx.lineWidth = 2;
       ctx.stroke();
     }
     calibrationPoints.forEach(([x, y], index) => {
       const px = (x / Number(referenceResolution[0])) * canvas.width;
       const py = (y / Number(referenceResolution[1])) * canvas.height;
-      ctx.fillStyle = '#facc15';
-      ctx.beginPath(); ctx.arc(px, py, 7, 0, Math.PI * 2); ctx.fill();
-      ctx.fillStyle = '#020617';
-      ctx.font = 'bold 12px ui-monospace';
-      ctx.fillText(String(index + 1), px - 4, py + 4);
+      ctx.fillStyle = '#ffc176';
+      ctx.beginPath();
+      ctx.arc(px, py, 6, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#071421';
+      ctx.font = 'bold 10px JetBrains Mono, monospace';
+      ctx.fillText(String(index + 1), px - 3.5, py + 3.5);
     });
   }, [calibrationPoints, referenceResolution]);
 
   const toggleSeat = (seat: RoomSeat) => {
-    if (['occupied', 'pending', 'uncertain'].includes(seat.status)) return;
+    if (!sessionId || saving || ['occupied', 'pending', 'uncertain'].includes(seat.status)) return;
     const key = disabledKey(seat);
     setDisabled((previous) => {
       const next = new Set(previous);
-      if (next.has(key)) next.delete(key); else next.add(key);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
       return next;
     });
   };
 
   const adjustRows = (nextRows: number) => {
+    if (!sessionId || saving) return;
     const normalized = Math.max(1, Math.min(24, nextRows));
     setRows(normalized);
-    setDisabled((previous) => new Set(Array.from(previous).filter((value) => Number(value.split(':')[0]) <= normalized)));
+    setDisabled(
+      (previous) =>
+        new Set(Array.from(previous).filter((value) => Number(value.split(':')[0]) <= normalized))
+    );
   };
 
   const saveLayout = async () => {
-    if (!sessionId || !layout.template) return;
-    setSaving(true); setMessage(null); setErrorMessage(null);
+    if (!sessionId) return;
+    setSaving(true);
+    setMessage(null);
+    setErrorMessage(null);
     try {
       const disabledSeats = Array.from(disabled).map((value) => {
         const [row, block, column] = value.split(':');
         return { row: Number(row), block, column: Number(column) };
       });
       const response = await updateSessionLayout(sessionId, {
-        room_profile: room.name,
-        template: String(layout.template),
+        // The API expects the backend template identifier, not the display label.
+        template: template || DEFAULT_TEMPLATE,
         rows: Math.max(1, rows),
         disabled_seats: disabledSeats,
       });
@@ -198,58 +285,400 @@ export const RoomSetupPage: React.FC<RoomSetupPageProps> = ({ t, sessionId }) =>
       setMessage('Layout updated for the active session.');
     } catch (error) {
       setErrorMessage(getApiErrorMessage(error, 'Unable to save the room layout.'));
-    } finally { setSaving(false); }
+    } finally {
+      setSaving(false);
+    }
   };
 
   const saveCalibration = async () => {
     if (!sessionId || calibrationPoints.length !== 4) return;
-    setSaving(true); setMessage(null); setErrorMessage(null);
+    setSaving(true);
+    setMessage(null);
+    setErrorMessage(null);
     try {
       const width = Math.max(0.1, floorWidthM);
       const depth = Math.max(0.1, floorDepthM);
       const response = await updateSessionCalibration(sessionId, {
         floor_points_px: calibrationPoints,
-        floor_points_m: [[0, 0], [width, 0], [width, depth], [0, depth]],
+        floor_points_m: [
+          [0, 0],
+          [width, 0],
+          [width, depth],
+          [0, depth],
+        ],
         maximum_error_cm: 10,
       });
       applySnapshot(response.classroom as ClassroomSnapshot);
       setMessage('Calibration updated for the active session.');
     } catch (error) {
       setErrorMessage(getApiErrorMessage(error, 'Unable to save camera calibration.'));
-    } finally { setSaving(false); }
+    } finally {
+      setSaving(false);
+    }
   };
 
   const handleCanvasClick = (event: React.MouseEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
-    const x = Math.max(0, Math.min(Number(referenceResolution[0]), ((event.clientX - rect.left) / rect.width) * Number(referenceResolution[0])));
-    const y = Math.max(0, Math.min(Number(referenceResolution[1]), ((event.clientY - rect.top) / rect.height) * Number(referenceResolution[1])));
-    setCalibrationPoints((previous) => previous.length >= 4 ? [[x, y]] : [...previous, [x, y]]);
+    const x = Math.max(
+      0,
+      Math.min(
+        Number(referenceResolution[0]),
+        ((event.clientX - rect.left) / rect.width) * Number(referenceResolution[0])
+      )
+    );
+    const y = Math.max(
+      0,
+      Math.min(
+        Number(referenceResolution[1]),
+        ((event.clientY - rect.top) / rect.height) * Number(referenceResolution[1])
+      )
+    );
+    setCalibrationPoints((previous) => (previous.length >= 4 ? [[x, y]] : [...previous, [x, y]]));
     setMessage(null);
   };
 
+  const columnLetters = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L'];
+
   return (
-    <div className="p-6 space-y-6 max-w-7xl mx-auto">
-      <div className="flex flex-wrap items-center justify-between gap-4">
-        <div><h2 className="text-xl font-bold font-mono text-slate-100 flex items-center gap-2">{t.roomTitle}</h2><p className="text-xs text-sky-300/80 font-mono">{t.roomSub}</p></div>
-        <div className="flex space-x-2 bg-[#071120] border border-sky-500/40 p-1 rounded-lg text-xs font-mono">
-          <button onClick={() => setTab('layout')} className={`px-3 py-1.5 rounded-md font-bold flex items-center gap-1.5 transition-all cursor-pointer ${tab === 'layout' ? 'bg-cyan-400 text-slate-950' : 'text-slate-400 hover:text-cyan-300'}`}><Armchair className="w-3.5 h-3.5" />{t.layoutTab}</button>
-          <button onClick={() => setTab('calibration')} className={`px-3 py-1.5 rounded-md font-bold flex items-center gap-1.5 transition-all cursor-pointer ${tab === 'calibration' ? 'bg-cyan-400 text-slate-950' : 'text-slate-400 hover:text-cyan-300'}`}><Crosshair className="w-3.5 h-3.5" />{t.calibTab}</button>
+    <div className="flex flex-col lg:flex-row h-full min-h-[calc(100vh-64px)] overflow-hidden">
+      {/* Left Sidebar: Tools & Configuration Panel (320px width) */}
+      <div className="w-full lg:w-80 border-b lg:border-b-0 lg:border-r border-border-default bg-app-bg flex flex-col shrink-0">
+        {/* Title Header */}
+        <div className="p-6 sm:p-8 border-b border-border-default">
+          <div className="flex items-center gap-1.5 text-xs text-text-muted mb-2">
+            <span>{t.roomTitle}</span>
+            <ChevronRight className="w-3.5 h-3.5" />
+            <span className="text-text-primary">{t.classroomA}</span>
+          </div>
+          <h2 className="text-xl sm:text-2xl font-semibold text-text-primary tracking-tight">
+            {t.layoutConfiguration}
+          </h2>
+        </div>
+
+        {/* Configuration controls */}
+        <div className="p-6 sm:p-8 flex-1 overflow-y-auto space-y-8">
+          {/* Configuration Form */}
+          <div>
+            <h3 className="text-xs font-semibold text-text-muted uppercase tracking-wider mb-4">
+              {t.configuration}
+            </h3>
+            <div className="space-y-4">
+              <div>
+                <label className="block text-[11px] font-semibold uppercase tracking-wider text-text-muted mb-1.5">
+                  {t.seatLayout}
+                </label>
+                <Select value={template} onValueChange={(val) => setTemplate(val)}>
+                  <SelectTrigger disabled={!sessionId || saving}>
+                    <SelectValue placeholder="Select template" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {TEMPLATE_OPTIONS.map((option) => (
+                      <SelectItem key={option.value} value={option.value}>
+                        {option.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-semibold uppercase tracking-wider text-text-muted mb-1.5">
+                  {t.rows}
+                </label>
+                <div className="flex items-center space-x-2">
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    disabled={!sessionId || saving || rows <= 1}
+                    onClick={() => adjustRows(rows - 1)}
+                  >
+                    <Minus className="w-3.5 h-3.5" />
+                  </Button>
+                  <span className="font-mono text-sm font-semibold text-text-primary w-10 text-center">
+                    {rows}
+                  </span>
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    disabled={!sessionId || saving || rows >= 24}
+                    onClick={() => adjustRows(rows + 1)}
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                  </Button>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-semibold uppercase tracking-wider text-text-muted mb-1.5">
+                  {t.editMode}
+                </label>
+                <Button
+                  variant={tab === 'layout' ? 'secondary' : 'outline'}
+                  onClick={() => setTab('layout')}
+                  className={`w-full justify-start gap-2.5 ${tab === 'layout' ? 'border-primary text-primary font-semibold' : ''}`}
+                >
+                  <Armchair className="w-4 h-4" />
+                  <span>{t.enableDisableSeats}</span>
+                </Button>
+              </div>
+            </div>
+          </div>
+
+          {/* Calibration */}
+          <div>
+            <h3 className="text-xs font-semibold text-text-muted uppercase tracking-wider mb-3">
+              {t.calibration}
+            </h3>
+            <Button
+              variant={tab === 'calibration' ? 'secondary' : 'outline'}
+              onClick={() => setTab('calibration')}
+              className={`w-full justify-start gap-2.5 ${tab === 'calibration' ? 'border-primary text-primary font-semibold' : ''}`}
+            >
+              <Crosshair className="w-4 h-4" />
+              <span>{t.cameraReference}</span>
+            </Button>
+          </div>
+
+          {/* Details */}
+          <div>
+            <h3 className="text-xs font-semibold text-text-muted uppercase tracking-wider mb-3">
+              {t.roomDetails}
+            </h3>
+            <div className="space-y-2 text-xs">
+              <div className="flex justify-between items-center py-1 border-b border-border-default/50">
+                <span className="text-text-muted">{t.visibleArea}</span>
+                <span className="font-mono text-text-primary font-semibold">
+                  {typeof room.visible_floor_area_m2 === 'number'
+                    ? `${room.visible_floor_area_m2.toFixed(1)}m²`
+                    : '64m²'}
+                </span>
+              </div>
+              <div className="flex justify-between items-center py-1 border-b border-border-default/50">
+                <span className="text-text-muted">{t.layout}</span>
+                <span className="font-mono text-text-primary font-semibold">{template}</span>
+              </div>
+              <div className="flex justify-between items-center py-1">
+                <span className="text-text-muted">{t.totalSeats}</span>
+                <span className="font-mono text-text-primary font-semibold">{totalSeatCount}</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Feedback messages */}
+          {!sessionId && (
+            <div className="bg-warning/10 border border-warning/30 text-warning p-3 rounded text-xs flex items-center gap-2">
+              <AlertCircle className="w-4 h-4 shrink-0" />
+              <span>Start monitoring on Live Monitor to apply session changes live.</span>
+            </div>
+          )}
+
+          {errorMessage && (
+            <div className="bg-danger/10 border border-danger/30 text-danger p-3 rounded text-xs">
+              {errorMessage}
+            </div>
+          )}
+
+          {message && (
+            <div className="bg-success/10 border border-success/30 text-success p-3 rounded text-xs flex items-center gap-2">
+              <CheckCircle2 className="w-4 h-4 shrink-0" />
+              <span>{message}</span>
+            </div>
+          )}
+        </div>
+
+        {/* Action Buttons */}
+        <div className="p-6 sm:p-8 border-t border-border-default bg-surface-primary flex flex-col gap-2.5">
+          <Button
+            variant="default"
+            onClick={() => void (tab === 'calibration' ? saveCalibration() : saveLayout())}
+            disabled={saving || !sessionId || (tab === 'calibration' && calibrationPoints.length !== 4)}
+            className="w-full gap-2"
+          >
+            <Save className="w-4 h-4" />
+            <span>{saving ? 'Saving…' : tab === 'calibration' ? t.saveCalibBtn : t.saveLayout}</span>
+          </Button>
+          <Button
+            variant="outline"
+            onClick={() => void loadSnapshot()}
+            disabled={saving}
+            className="w-full"
+          >
+            {t.reset}
+          </Button>
         </div>
       </div>
 
-      {!sessionId && <div className="cyber-card p-4 text-sm text-amber-300 font-mono flex items-center gap-2"><AlertCircle className="w-4 h-4" /> Start the classroom camera from Live Monitor before editing this session.</div>}
-      {loading && <div className="text-xs text-sky-300 font-mono">Loading classroom configuration…</div>}
-      {errorMessage && <div className="cyber-card p-4 text-sm text-rose-300 font-mono">{errorMessage}</div>}
-      {message && <div className="cyber-card p-4 text-sm text-emerald-300 font-mono">{message}</div>}
+      {/* Right Canvas: Floor Plan or Camera Calibration */}
+      <div className="flex-1 bg-app-bg relative flex flex-col overflow-hidden min-h-[500px]">
+        {tab === 'layout' && (
+          <>
+            {/* Top legend inside Canvas */}
+            <div className="absolute top-6 right-6 z-10 flex gap-4 items-center">
+              <div className="flex items-center gap-4 bg-surface-primary/90 backdrop-blur-sm border border-border-default px-3 py-1.5 rounded text-xs">
+                <div className="flex items-center gap-1.5">
+                  <div className="w-3 h-3 border border-border-default bg-transparent rounded-sm" />
+                  <span className="text-[11px] text-text-muted uppercase tracking-wider">
+                    {t.available}
+                  </span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <div className="w-3 h-3 border border-primary bg-primary/20 rounded-sm" />
+                  <span className="text-[11px] text-primary uppercase tracking-wider font-medium">
+                    {t.selected}
+                  </span>
+                </div>
+              </div>
+            </div>
 
-      {tab === 'layout' && <div className="space-y-6">
-        <div className="cyber-card p-5 rounded-xl flex flex-wrap items-center justify-between gap-4"><div className="flex items-center space-x-8 font-mono"><div><label className="text-xs text-sky-300 block mb-1">{t.roomArea}</label><div className="text-sm font-bold text-cyan-300">{typeof room.visible_floor_area_m2 === 'number' ? `${room.visible_floor_area_m2.toFixed(1)} m²` : '--'}</div></div><div><label className="text-xs text-sky-300 block mb-1">{t.seatingPattern}</label><div className="text-sm font-bold text-slate-100">{layout.template || '--'}</div></div><div><label className="text-xs text-sky-300 block mb-1">{t.rowsCount}</label><div className="flex items-center space-x-2"><button disabled={!sessionId || rows <= 1} onClick={() => adjustRows(rows - 1)} className="cyber-btn p-1 rounded cursor-pointer disabled:opacity-40"><Minus className="w-3.5 h-3.5" /></button><span className="font-bold text-slate-100 w-6 text-center">{rows || '--'}</span><button disabled={!sessionId || rows >= 24} onClick={() => adjustRows(rows + 1)} className="cyber-btn p-1 rounded cursor-pointer disabled:opacity-40"><Plus className="w-3.5 h-3.5" /></button></div></div></div><div className="text-right font-mono"><div className="text-xs text-sky-300">{t.configuredSeats}</div><div className="text-xl font-bold text-cyan-400">{totalSeatCount ? `${enabledSeatCount} / ${totalSeatCount}` : '--'}</div></div></div>
-        <div className="cyber-card p-6 rounded-xl space-y-6"><div className="w-full py-2 bg-cyan-400/10 border border-cyan-400/40 rounded-lg text-center text-xs font-mono font-bold text-cyan-300 uppercase tracking-widest">{t.frontLectern}</div><div className="space-y-4 max-w-5xl mx-auto py-4 font-mono">{Array.from({ length: rows }).map((_, index) => { const row = index + 1; return <div key={row} className="flex items-center justify-center gap-4 overflow-x-auto"><span className="text-xs text-sky-300 w-12 font-bold shrink-0">Dãy {row}</span>{blocks.map((block) => <div key={block} className="flex gap-2 border-l border-dashed border-sky-500/40 pl-3 first:border-l-0" title={block}>{seats.filter((seat) => seat.row === row && seat.block === block).map((seat) => <button key={seat.id} aria-label={`${seat.id} ${seat.status}`} onClick={() => toggleSeat(seat)} disabled={!sessionId || ['occupied', 'pending', 'uncertain'].includes(seat.status)} className={`w-8 h-8 rounded-full border flex items-center justify-center text-xs transition-transform hover:scale-125 cursor-pointer disabled:cursor-not-allowed ${seat.status === 'occupied' ? 'bg-cyan-400 text-slate-950 border-cyan-300' : seat.status === 'disabled' ? 'bg-rose-500/15 border-rose-500/30 text-rose-400 opacity-60' : seat.status === 'pending' || seat.status === 'uncertain' ? 'bg-amber-500/15 border-amber-500/40 text-amber-300' : 'bg-[#071120] border-sky-500/40 text-sky-300 hover:border-cyan-400'}`}>{seat.status === 'occupied' ? '●' : seat.status === 'disabled' ? '✕' : seat.status === 'pending' || seat.status === 'uncertain' ? '?' : '○'}</button>)}</div>)}</div>; })}{rows === 0 && <div className="text-center text-sm text-slate-400">No active classroom layout is available.</div>}</div><div className="w-full py-2 bg-[#071120] border border-sky-500/30 rounded-lg text-center text-xs font-mono text-sky-400 uppercase tracking-widest">{t.rearDoor}</div><div className="flex justify-end"><button disabled={!sessionId || saving || !layout.template} onClick={() => void saveLayout()} className="cyber-btn bg-cyan-400 text-slate-950 px-4 py-2 rounded-lg font-bold text-xs flex items-center gap-1.5 cursor-pointer disabled:opacity-40"><Save className="w-4 h-4" />{saving ? 'Saving…' : 'Save layout'}</button></div></div>
-      </div>}
+            {/* Interactive Grid Area */}
+            <div className="flex-1 relative overflow-auto grid-pattern p-8 sm:p-16 flex flex-col items-center justify-center">
+              <div className="flex flex-col items-center gap-12 pt-8 pb-16">
+                {/* Desks Grid */}
+                <div className="flex gap-8 sm:gap-16 relative">
+                  {blocks.map((block, blockIndex) => {
+                    const blockSeats = seats.filter((seat) => seat.block === block);
+                    const blockCols = Math.max(
+                      ...blockSeats.map((s) => s.column),
+                      blockIndex === 1 ? 4 : 2
+                    );
+                    return (
+                      <div
+                        key={block}
+                        className="grid gap-3 sm:gap-5"
+                        style={{ gridTemplateColumns: `repeat(${blockCols}, minmax(0, 1fr))` }}
+                      >
+                        {Array.from({ length: rows }).map((_, rIdx) => {
+                          const rowNum = rIdx + 1;
+                          return Array.from({ length: blockCols }).map((__, cIdx) => {
+                            const colNum = cIdx + 1;
+                            const seat = blockSeats.find(
+                              (s) => s.row === rowNum && s.column === colNum
+                            ) || {
+                              id: seatId(rowNum, block, colNum),
+                              row: rowNum,
+                              block,
+                              column: colNum,
+                              status: 'vacant',
+                            };
+                            const isDisabled = seat.status === 'disabled';
+                            const isOccupied = seat.status === 'occupied';
+                            const letterIdx =
+                              blockIndex === 0
+                                ? cIdx
+                                : blockIndex === 1
+                                ? 2 + cIdx
+                                : 6 + cIdx;
+                            const seatLabel = `${rowNum}${columnLetters[letterIdx] || colNum}`;
 
-      {tab === 'calibration' && <div className="cyber-card p-6 space-y-6"><div className="flex flex-wrap items-center justify-between gap-3"><div><h3 className="text-base font-bold font-mono text-slate-100">{t.homographyTitle}</h3><p className="text-xs text-sky-300/80 font-mono">Click four floor corners in reference-frame order: top-left, top-right, bottom-right, bottom-left.</p></div><div className="flex gap-2"><button onClick={() => setCalibrationPoints([])} className="cyber-btn px-3 py-2 rounded-lg text-xs flex items-center gap-1.5"><RotateCcw className="w-3.5 h-3.5" />Clear</button><button disabled={!sessionId || saving || calibrationPoints.length !== 4} onClick={() => void saveCalibration()} className="cyber-btn bg-cyan-400 text-slate-950 px-4 py-2 rounded-lg font-bold text-xs flex items-center gap-1.5 cursor-pointer disabled:opacity-40"><Save className="w-4 h-4" />{saving ? 'Saving…' : t.saveCalibBtn}</button></div></div><div className="relative bg-[#071120] border border-sky-500/40 rounded-xl overflow-hidden aspect-video"><canvas ref={canvasRef} width={800} height={450} onClick={handleCanvasClick} className="w-full h-full object-contain cursor-crosshair" /></div><div className="flex flex-wrap items-end gap-4 text-xs font-mono"><label className="text-sky-300">Floor width (m)<input type="number" min="0.1" step="0.1" value={floorWidthM} onChange={(event) => setFloorWidthM(Number(event.target.value))} className="mt-1 block w-28 bg-[#071120] border border-sky-500/40 text-cyan-300 font-bold text-center px-2 py-1 rounded" /></label><label className="text-sky-300">Floor depth (m)<input type="number" min="0.1" step="0.1" value={floorDepthM} onChange={(event) => setFloorDepthM(Number(event.target.value))} className="mt-1 block w-28 bg-[#071120] border border-sky-500/40 text-cyan-300 font-bold text-center px-2 py-1 rounded" /></label><span className="text-sky-300">{calibrationPoints.length}/4 points · reference {referenceResolution[0]}×{referenceResolution[1]}</span></div></div>}
+                            return (
+                              <button
+                                key={seat.id}
+                                onClick={() => toggleSeat(seat)}
+                                disabled={!sessionId || saving || ['occupied', 'pending', 'uncertain'].includes(seat.status)}
+                                className={`w-11 h-11 sm:w-13 sm:h-13 rounded border font-mono text-xs flex items-center justify-center transition-all cursor-pointer ${
+                                  isOccupied
+                                    ? 'bg-primary/20 border-primary text-primary font-semibold'
+                                    : isDisabled
+                                    ? 'bg-surface-container-high/40 border-border-default/40 text-text-muted/40 line-through'
+                                    : 'bg-transparent border-border-default text-text-muted hover:border-text-primary hover:text-text-primary'
+                                }`}
+                                title={`Seat ${seatLabel} - ${seat.status}`}
+                              >
+                                <span>{seatLabel}</span>
+                              </button>
+                            );
+                          });
+                        })}
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Teacher Station */}
+                <div className="w-56 h-14 bg-transparent border border-border-default rounded flex items-center justify-center">
+                  <span className="font-mono text-xs text-text-muted uppercase tracking-widest">
+                    {t.teacherStation}
+                  </span>
+                </div>
+
+                {/* Projection Screen Indicator */}
+                <div className="w-72 h-1 bg-border-strong rounded-full" />
+              </div>
+            </div>
+          </>
+        )}
+
+        {tab === 'calibration' && (
+          <div className="flex-1 p-6 sm:p-10 flex flex-col space-y-6 overflow-auto">
+            <div className="flex flex-wrap items-center justify-between gap-4">
+              <div>
+                <h3 className="text-base font-semibold text-text-primary">{t.homographyTitle}</h3>
+                <p className="text-xs text-text-muted mt-1">
+                  Click four floor corners in reference-frame order: top-left, top-right, bottom-right, bottom-left.
+                </p>
+              </div>
+              <div className="flex gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setCalibrationPoints([])}
+                  disabled={!sessionId || saving}
+                  className="gap-1.5"
+                >
+                  <RotateCcw className="w-3.5 h-3.5" />
+                  <span>Clear</span>
+                </Button>
+              </div>
+            </div>
+
+            {/* Calibration Canvas */}
+            <div className="relative w-full aspect-video bg-surface-container-lowest border border-border-default rounded-lg overflow-hidden flex items-center justify-center">
+              <canvas
+                ref={canvasRef}
+                width={800}
+                height={450}
+                onClick={sessionId ? handleCanvasClick : undefined}
+                className={`w-full h-full object-contain ${sessionId ? 'cursor-crosshair' : 'cursor-not-allowed opacity-60'}`}
+              />
+            </div>
+
+            {/* Dimension Inputs */}
+            <div className="flex flex-wrap items-center gap-6 text-xs font-mono">
+              <label className="text-text-muted flex items-center gap-2">
+                <span>Floor width (m):</span>
+                <input
+                  type="number"
+                  min="0.1"
+                  step="0.1"
+                  value={floorWidthM}
+                  onChange={(e) => setFloorWidthM(Number(e.target.value))}
+                  disabled={!sessionId || saving}
+                  className="w-20 bg-surface-secondary border border-border-default text-primary font-bold text-center px-2 py-1 rounded outline-none"
+                />
+              </label>
+
+              <label className="text-text-muted flex items-center gap-2">
+                <span>Floor depth (m):</span>
+                <input
+                  type="number"
+                  min="0.1"
+                  step="0.1"
+                  value={floorDepthM}
+                  onChange={(e) => setFloorDepthM(Number(e.target.value))}
+                  disabled={!sessionId || saving}
+                  className="w-20 bg-surface-secondary border border-border-default text-primary font-bold text-center px-2 py-1 rounded outline-none"
+                />
+              </label>
+
+              <span className="text-text-muted">
+                {calibrationPoints.length}/4 points · reference {referenceResolution[0]}×{referenceResolution[1]}
+              </span>
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 };
