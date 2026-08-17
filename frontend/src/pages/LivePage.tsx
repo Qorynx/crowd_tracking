@@ -963,24 +963,40 @@ export const LivePage: React.FC<LivePageProps> = ({
       {/* Left Column: Camera Feed Area (~70-75% of desktop width) */}
       <div className="flex-1 flex flex-col min-w-0">
         {/* Video Header Controls */}
-        <div className="flex justify-between items-center mb-3">
-          <div className="flex items-center gap-2">
+        <div className="flex flex-wrap justify-between items-center gap-2 mb-3">
+          <div className="flex min-w-0 shrink-0 items-center gap-2">
             <Camera className="w-4 h-4 text-text-muted" />
-            <span className="font-mono text-xs text-text-muted uppercase tracking-wider">
-              CAM_01_FRONT
+            <span className="font-mono text-xs text-text-muted uppercase tracking-wider truncate">
+              CAM_01_{facingMode === 'user' ? 'FRONT' : 'BACK'}
             </span>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex min-w-0 flex-1 flex-wrap items-center justify-end gap-1 sm:gap-3">
+            {/* Switch Camera — kept first and labeled on mobile so it cannot
+                be pushed off-screen by the overlay controls. */}
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={switchCameraFacing}
+              title={t.switchCam}
+              aria-label={t.switchCam}
+              className="shrink-0 gap-1 px-2 sm:w-8 sm:px-0"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+              <span className="sm:hidden">
+                {facingMode === 'user' ? 'Cam sau' : 'Cam trước'}
+              </span>
+            </Button>
+
             {/* Boxes toggle button */}
             <Button
               variant={overlays.boxes ? 'secondary' : 'ghost'}
               size="sm"
               onClick={() => toggleOverlay('boxes')}
-              className="gap-1.5 font-medium"
+              className="gap-1.5 px-2 font-medium sm:px-3"
             >
               <Crop className="w-3.5 h-3.5" />
-              <span>{t.boxes}</span>
+              <span className="hidden sm:inline">{t.boxes}</span>
             </Button>
 
             {/* IDs toggle button */}
@@ -988,19 +1004,19 @@ export const LivePage: React.FC<LivePageProps> = ({
               variant={overlays.ids ? 'secondary' : 'ghost'}
               size="sm"
               onClick={() => toggleOverlay('ids')}
-              className="gap-1.5 font-medium"
+              className="gap-1.5 px-2 font-medium sm:px-3"
             >
               <BadgeIcon className="w-3.5 h-3.5" />
-              <span>{t.ids}</span>
+              <span className="hidden sm:inline">{t.ids}</span>
             </Button>
 
             {/* Overlays Radix Dropdown */}
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <Button variant="ghost" size="sm" className="gap-1 font-medium">
+                <Button variant="ghost" size="sm" className="gap-1 px-2 font-medium sm:px-3">
                   <Layers className="w-3.5 h-3.5" />
-                  <span>{t.overlays}</span>
-                  <ChevronDown className="w-3.5 h-3.5" />
+                  <span className="hidden sm:inline">{t.overlays}</span>
+                  <ChevronDown className="hidden w-3.5 h-3.5 sm:inline" />
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-56">
@@ -1050,15 +1066,6 @@ export const LivePage: React.FC<LivePageProps> = ({
               </DropdownMenuContent>
             </DropdownMenu>
 
-            {/* Switch Camera */}
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={switchCameraFacing}
-              title={t.switchCam}
-            >
-              <RefreshCw className="w-3.5 h-3.5" />
-            </Button>
           </div>
         </div>
 
