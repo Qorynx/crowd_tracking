@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 
 import modal
@@ -131,6 +132,17 @@ def _required_local_assets(project_root: Path = PROJECT_ROOT) -> dict[str, Path]
 def _runtime_image() -> modal.Image:
     """Build a reproducible image containing only the selected live profile."""
 
+    # Modal imports the application module again inside a deployed container.
+    # At that point ``__file__`` is typically ``/root/modal_app.py`` and the
+    # local repository (including the manifest and checkpoints) is not mounted
+    # there. Rebuilding the image or validating local paths in that context
+    # makes the container fail before FastAPI can start. Reuse the image that
+    # is already running instead; local deploys still take the validation path
+    # below and fail fast on missing or corrupt assets.
+    current_image_id = os.getenv("MODAL_IMAGE_ID", "").strip()
+    if current_image_id:
+        return modal.Image.from_id(current_image_id)
+
     # Do this before instantiating ``modal.Image`` so a deployment fails with
     # an actionable local remediation rather than an opaque image-build error.
     model_assets = _required_local_assets()
@@ -206,6 +218,11 @@ def _runtime_image() -> modal.Image:
         .add_local_file(
             model_assets["body_gender_classifier"],
             remote_path=f"{REMOTE_ROOT}/artifacts/body_gender_classifier/body_gender_classifier_mobilenet_v3_small.pth",
+            copy=True,
+        )
+        .add_local_file(
+            PRODUCTION_ASSET_MANIFEST,
+            remote_path=f"{REMOTE_ROOT}/models/production-assets.json",
             copy=True,
         )
     )
