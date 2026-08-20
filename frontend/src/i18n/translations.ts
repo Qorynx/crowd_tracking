@@ -165,6 +165,7 @@ export const translations = {
     saveCalibBtn: 'Save Calibration',
     calibSavedMsg: '✓ Đã lưu thông số hiệu chỉnh thành công cho Classroom A!',
     seatingPlaneLabel: 'Vùng ghế ngoại cảnh',
+    rightEntrance: 'CỬA RA VÀO / CẠNH PHẢI',
 
     // System Page
     systemTitle: 'System Diagnostics',
@@ -367,6 +368,7 @@ export const translations = {
     saveCalibBtn: 'Save Calibration',
     calibSavedMsg: '✓ Calibration parameters saved successfully for Classroom A!',
     seatingPlaneLabel: 'Seating Plane (Homography Polygons)',
+    rightEntrance: 'RIGHT-SIDE ENTRANCE',
 
     // System Page
     systemTitle: 'System Diagnostics',
