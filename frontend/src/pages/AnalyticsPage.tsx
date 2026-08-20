@@ -77,18 +77,18 @@ export const AnalyticsPage: React.FC<AnalyticsPageProps> = ({ analytics, t, isLi
                 <div className="absolute inset-0 grid-pattern opacity-20 pointer-events-none" />
 
                 {/* Room Boundary Box */}
-                <div className="absolute inset-6 sm:inset-10 border border-border-strong/40 rounded-sm pointer-events-none">
+                <div className="absolute inset-6 sm:inset-10 border border-border-strong/40 rounded-sm pointer-events-none flex flex-col justify-between p-4">
                   {/* Top instruction zone indicator */}
-                  <div className="absolute left-4 right-4 top-4 border-b border-dashed border-border-strong/40 pb-2">
+                  <div className="border-b border-dashed border-border-strong/40 pb-2">
                     <span className="font-mono text-[10px] text-text-muted uppercase tracking-widest">
                       {t.frontLectern}
                     </span>
                   </div>
 
-                  {/* Entrance: upper-right corner, aligned vertically with the
-                      classroom's right wall rather than at the rear edge. */}
-                  <div className="absolute right-[-1px] top-8 flex h-28 w-28 items-center justify-center border-y border-l border-primary/60 bg-surface-container-lowest/95 px-2 text-center">
-                    <span className="font-mono text-[10px] text-primary uppercase tracking-widest [writing-mode:vertical-rl]">
+                  {/* Entrance marker: keep the original single horizontal rule,
+                      moved to the upper-right side of the classroom. */}
+                  <div className="absolute right-0 top-10 w-36 border-t border-dashed border-border-strong/40 pt-2 pr-2 text-right">
+                    <span className="font-mono text-[10px] text-text-muted uppercase tracking-widest">
                       {t.rightEntrance}
                     </span>
                   </div>
