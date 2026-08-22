@@ -90,6 +90,7 @@ const EMPTY_OVERLAY: OverlayRenderData = {
 const LIVE_MODE = 'classroom_demo' as const;
 const CAMERA_PERMISSION_TIMEOUT_MS = 20_000;
 const ICE_GATHERING_TIMEOUT_MS = 10_000;
+const WEBRTC_SIGNALING_TIMEOUT_MS = 60_000;
 const WEBRTC_CONNECTION_TIMEOUT_MS = 60_000;
 const FRAME_SOCKET_MIN_CADENCE_MS = 200;
 const FRAME_SOCKET_MAX_BUFFERED_BYTES = 256_000;
@@ -670,7 +671,7 @@ export const LivePage: React.FC<LivePageProps> = ({
       const timeoutId = window.setTimeout(() => {
         socket.close();
         finishWithError(new Error('WebRTC signaling timed out.'));
-      }, 20_000);
+      }, WEBRTC_SIGNALING_TIMEOUT_MS);
 
       socket.onopen = () => {
         socket.send(JSON.stringify({
