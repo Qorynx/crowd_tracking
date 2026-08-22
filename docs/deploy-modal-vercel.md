@@ -42,8 +42,8 @@ framework preset as Vite. `frontend/vercel.json` pins `npm ci`, the ship check,
 the `dist` output directory, immutable hashed-asset caching, and basic browser
 security headers.
 
-Use the stable production alias (for example
-`https://crowd-dashboard.vercel.app`) for CORS. Do not add `*.vercel.app`:
+Use the stable production alias
+`https://crowd-tracking-z317.vercel.app` for CORS. Do not add `*.vercel.app`:
 wildcard origins are intentionally rejected. A preview deployment needs its
 own exact origin or a stable preview/custom-domain alias.
 
@@ -52,7 +52,7 @@ own exact origin or a stable preview/custom-domain alias.
 Create the required Modal Secret before deployment:
 
 ```powershell
-.\.venv\Scripts\modal.exe secret create crowd-analytics-production FRONTEND_ORIGINS=https://crowd-dashboard.vercel.app
+.\.venv\Scripts\modal.exe secret create crowd-analytics-production FRONTEND_ORIGINS=https://crowd-tracking-z317.vercel.app
 .\.venv\Scripts\modal.exe deploy deploy\modal_app.py
 ```
 
@@ -65,12 +65,17 @@ With coturn `--use-auth-secret`, prefer temporary HMAC credentials:
 
 ```powershell
 .\.venv\Scripts\modal.exe secret create crowd-analytics-production `
-  FRONTEND_ORIGINS=https://crowd-dashboard.vercel.app `
+  FRONTEND_ORIGINS=https://crowd-tracking-z317.vercel.app `
   WEBRTC_TURN_SERVERS="turn:turn.example.com:3478?transport=udp,turn:turn.example.com:3478?transport=tcp,turns:turn.example.com:5349?transport=tcp" `
   WEBRTC_TURN_SHARED_SECRET="replace-with-the-coturn-shared-secret" `
   WEBRTC_TURN_CREDENTIAL_TTL_SECONDS=3600 `
   --force
 ```
+
+The `turn.example.com` host and shared secret above are placeholders. Do not
+deploy them literally. Until a real TURN service is available, create the
+Secret with only `FRONTEND_ORIGINS`; the application will use STUN first and
+fall back to bounded JPEG frames over the lifecycle WebSocket.
 
 Managed TURN providers that issue a username/password can instead use
 `WEBRTC_TURN_USERNAME` and `WEBRTC_TURN_CREDENTIAL`. Never place either TURN
