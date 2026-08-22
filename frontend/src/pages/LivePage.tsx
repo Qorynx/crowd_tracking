@@ -158,6 +158,83 @@ async function requestCameraWithTimeout(constraints: MediaStreamConstraints): Pr
   }
 }
 
+const cameraConstraints = (
+  requestedFacing: CameraFacing,
+  exactFacing: boolean
+): MediaStreamConstraints => ({
+  video: {
+    facingMode: exactFacing ? { exact: requestedFacing } : requestedFacing,
+    width: { ideal: 640 },
+    height: { ideal: 480 },
+    frameRate: { ideal: 15, max: 30 },
+  },
+  audio: false,
+});
+
+const logCameraTrackSettings = (track: MediaStreamTrack, requestedFacing: CameraFacing): void => {
+  const settings = track.getSettings();
+  console.debug('[CAMERA]', {
+    requestedFacing,
+    label: track.label,
+    readyState: track.readyState,
+    facingMode: settings.facingMode,
+    width: settings.width,
+    height: settings.height,
+    frameRate: settings.frameRate,
+  });
+};
+
+async function requestCameraForFacing(requestedFacing: CameraFacing): Promise<MediaStream> {
+  let mediaStream: MediaStream;
+  try {
+    mediaStream = await requestCameraWithTimeout(cameraConstraints(requestedFacing, true));
+  } catch (error) {
+    // Some older mobile browsers reject the `exact` form even though they
+    // support facingMode. Retry with a preference, then verify the result
+    // before exposing it as a successful camera switch.
+    const canRetryWithPreference =
+      error instanceof DOMException && ['OverconstrainedError', 'NotFoundError'].includes(error.name);
+    if (!canRetryWithPreference) throw error;
+    console.warn('[CAMERA] Exact facingMode was rejected; retrying with a preference.', error);
+    mediaStream = await requestCameraWithTimeout(cameraConstraints(requestedFacing, false));
+  }
+
+  const track = mediaStream.getVideoTracks()[0];
+  if (!track) {
+    mediaStream.getTracks().forEach((item) => item.stop());
+    throw new Error('The browser returned a camera stream without a video track.');
+  }
+
+  logCameraTrackSettings(track, requestedFacing);
+  const actualFacing = track.getSettings().facingMode;
+  if (actualFacing && actualFacing !== requestedFacing) {
+    mediaStream.getTracks().forEach((item) => item.stop());
+    const error: CameraRequestError = new Error(
+      `The browser selected the ${actualFacing} camera instead of ${requestedFacing}.`
+    );
+    error.code = 'camera_unavailable';
+    throw error;
+  }
+  return mediaStream;
+}
+
+async function replaceVideoSenderTrack(sender: RTCRtpSender, track: MediaStreamTrack): Promise<void> {
+  try {
+    await sender.replaceTrack(track);
+  } catch (error) {
+    // A rear camera may expose a larger native mode than the negotiated
+    // front-camera track. Downscale once and retry before declaring the
+    // existing peer unusable.
+    console.warn('[CAMERA] replaceTrack rejected the native rear-camera mode; constraining and retrying.', error);
+    await track.applyConstraints({
+      width: { ideal: 640, max: 640 },
+      height: { ideal: 480, max: 480 },
+      frameRate: { ideal: 15, max: 30 },
+    });
+    await sender.replaceTrack(track);
+  }
+}
+
 export const LivePage: React.FC<LivePageProps> = ({
   analytics,
   onAnalyticsUpdate,
@@ -672,10 +749,8 @@ export const LivePage: React.FC<LivePageProps> = ({
   };
 
   const startStream = async (requestedFacing: CameraFacing = facingMode, forceRestart = false) => {
-    // A camera switch stops the current stream and immediately starts a new
-    // one. `isStreaming`/`isCameraLive` can still be stale in this closure
-    // while React commits the state updates from stopStream, so that restart
-    // must explicitly bypass the normal duplicate-start guard.
+    // A camera switch uses replaceTrack and does not call this method. The
+    // forceRestart argument remains for compatibility with any older caller.
     if (isStartingRef.current || (!forceRestart && (isStreaming || isCameraLive))) return;
     isStartingRef.current = true;
     setIsStarting(true);
@@ -693,38 +768,13 @@ export const LivePage: React.FC<LivePageProps> = ({
       );
       let mediaStream: MediaStream;
       try {
-        const constraints = {
-          video: {
-            facingMode: requestedFacing,
-            width: { ideal: 640 },
-            height: { ideal: 480 },
-          },
-          audio: false,
-        };
-        mediaStream = await requestCameraWithTimeout(constraints);
-      } catch (e) {
-        if (
-          ['camera_permission_timeout', 'camera_unavailable'].includes((e as CameraRequestError)?.code || '')
-        ) {
+        mediaStream = await requestCameraForFacing(requestedFacing);
+      } catch (error) {
+        if (['camera_permission_timeout', 'camera_unavailable'].includes((error as CameraRequestError)?.code || '')) {
           warmupAbortControllerRef.current?.abort();
           void trackingReadyPromise.catch(() => undefined);
-          throw e;
         }
-        console.warn('[WEBCAM] Preferred constraints failed, trying basic video:', e);
-        mediaStream = await requestCameraWithTimeout({ video: true, audio: false });
-
-        // A generic `{ video: true }` request commonly selects the front
-        // camera on mobile. Do not silently report that as a successful
-        // back-camera switch when the browser exposes the selected facing.
-        const actualFacing = mediaStream.getVideoTracks()[0]?.getSettings().facingMode;
-        if (requestedFacing === 'environment' && actualFacing === 'user') {
-          mediaStream.getTracks().forEach((track) => track.stop());
-          const error: CameraRequestError = new Error(
-            'Back camera is unavailable. Check browser camera permissions or device support.'
-          );
-          error.code = 'camera_unavailable';
-          throw error;
-        }
+        throw error;
       }
 
       if (!isStartingRef.current) {
@@ -832,15 +882,86 @@ export const LivePage: React.FC<LivePageProps> = ({
 
   const switchCameraFacing = async () => {
     const nextFacing = facingMode === 'user' ? 'environment' : 'user';
-    setFacingMode(nextFacing);
-    if (isCameraLive) {
-      stopStream();
-      // Pass the target explicitly: invoking startStream from this render
-      // would otherwise reuse the old `facingMode` value and reopen the
-      // front camera (or be blocked by the stale live-state guard).
-      window.setTimeout(() => {
-        void startStream(nextFacing, true);
-      }, 300);
+    if (!isCameraLive || !streamRef.current) {
+      setFacingMode(nextFacing);
+      return;
+    }
+    if (isStartingRef.current) return;
+
+    const previousFacing = facingMode;
+    const previousStream = streamRef.current;
+    const previousTrack = previousStream.getVideoTracks()[0];
+    if (!previousTrack || previousTrack.readyState !== 'live') {
+      setErrorMessage('The current camera track is no longer live. Stop and start the camera again.');
+      return;
+    }
+
+    const peer = webRtcPeerRef.current;
+    const videoSender =
+      peer && !['failed', 'closed'].includes(peer.connectionState)
+        ? peer.getSenders().find((sender) => sender.track?.kind === 'video')
+        : undefined;
+    isStartingRef.current = true;
+    setIsStarting(true);
+    setErrorMessage(null);
+
+    let nextStream: MediaStream | null = null;
+    try {
+      // Release the old device before requesting the opposite lens. The
+      // peer, lifecycle socket and tracker session stay alive throughout.
+      if (videoSender) await videoSender.replaceTrack(null);
+      previousTrack.stop();
+      nextStream = await requestCameraForFacing(nextFacing);
+
+      if (!isStartingRef.current || streamRef.current !== previousStream) {
+        nextStream.getTracks().forEach((track) => track.stop());
+        return;
+      }
+
+      const nextTrack = nextStream.getVideoTracks()[0];
+      if (!nextTrack) throw new Error('The new camera stream has no video track.');
+      if (videoSender) await replaceVideoSenderTrack(videoSender, nextTrack);
+
+      streamRef.current = nextStream;
+      if (videoRef.current) {
+        videoRef.current.srcObject = nextStream;
+        await videoRef.current.play();
+      }
+      setFacingMode(nextFacing);
+      setIsCameraLive(true);
+      logCameraTrackSettings(nextTrack, nextFacing);
+      nextStream = null;
+    } catch (switchError) {
+      nextStream?.getTracks().forEach((track) => track.stop());
+      if (!isStartingRef.current || streamRef.current !== previousStream) return;
+
+      // The old track was intentionally released for mobile compatibility.
+      // Reopen the previous lens so a failed switch does not destroy the
+      // active session or leave the preview blank.
+      try {
+        const restoredStream = await requestCameraForFacing(previousFacing);
+        const restoredTrack = restoredStream.getVideoTracks()[0];
+        if (!restoredTrack) throw new Error('The restored camera stream has no video track.');
+        if (videoSender) await replaceVideoSenderTrack(videoSender, restoredTrack);
+        streamRef.current = restoredStream;
+        if (videoRef.current) {
+          videoRef.current.srcObject = restoredStream;
+          await videoRef.current.play();
+        }
+        setFacingMode(previousFacing);
+        setIsCameraLive(true);
+        setErrorMessage(
+          `Could not switch camera: ${getApiErrorMessage(switchError, 'The requested camera is unavailable.')}`
+        );
+      } catch (restoreError) {
+        stopStream();
+        setErrorMessage(
+          `Camera switch failed: ${getApiErrorMessage(restoreError, 'The camera could not be restored.')}`
+        );
+      }
+    } finally {
+      isStartingRef.current = false;
+      setIsStarting(false);
     }
   };
 
@@ -1277,6 +1398,7 @@ export const LivePage: React.FC<LivePageProps> = ({
               variant="ghost"
               size="sm"
               onClick={switchCameraFacing}
+              disabled={isStarting}
               title={t.switchCam}
               aria-label={t.switchCam}
               className="shrink-0 gap-1 px-2 sm:w-8 sm:px-0"
