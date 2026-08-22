@@ -176,6 +176,19 @@ export interface WebRTCOfferResponse {
   expires_in_seconds: number | null;
 }
 
+export interface WebRTCIceServer {
+  urls: string | string[];
+  username?: string;
+  credential?: string;
+}
+
+export interface WebRTCIceConfigResponse {
+  ice_servers: WebRTCIceServer[];
+  turn_enabled: boolean;
+  expires_at_epoch: number | null;
+  cache_ttl_seconds: number;
+}
+
 export interface ApiErrorDetail {
   code: string;
   message: string;

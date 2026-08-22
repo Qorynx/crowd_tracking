@@ -49,7 +49,8 @@ automatic download cache.
 | `WebSocket` | `/api/v1/sessions/{session_id}/metadata` | Pushes each newer bbox/analytics snapshot for the live Canvas overlay. |
 | `POST` | `/api/v1/sessions/{session_id}/reset` | Clears FastTracker, `person_id`, counters, heatmap, and cadence telemetry. |
 | `DELETE` | `/api/v1/sessions/{session_id}` | Closes the live worker and releases its tracking state. |
-| `WS` | `/api/v1/webrtc/connect` | Preferred signaling + metadata channel; owns the peer for the socket lifetime. |
+| `GET` | `/api/v1/webrtc/ice-config` | Returns short-cached STUN/TURN entries without exposing backend shared secrets. |
+| `WS` | `/api/v1/webrtc/connect` | Preferred signaling + metadata channel; owns the live session for the socket lifetime. |
 | `POST` | `/api/v1/webrtc/offer` | Self-hosted browser WebRTC signaling; creates the live session and returns the SDP answer. |
 | `POST` | `/api/v1/video/analyze` | Uploads one bounded clip and immediately creates an asynchronous analysis job. |
 | `GET` | `/api/v1/video/jobs/{job_id}` | Returns queued/processing progress or the completed video result. |
@@ -170,23 +171,28 @@ frames to at most 640 pixels wide, applies socket backpressure, and the backend
 drops payloads larger than 1 MB. Repeated per-frame HTTP requests remain only a
 last-resort compatibility fallback when the lifecycle socket itself is gone.
 
-The demo does not implement a DataChannel, candidate endpoint, TURN
-credentials, or multi-camera routing. It uses `stun:stun.l.google.com:19302` by default; set
+The demo does not implement a DataChannel, trickle-candidate endpoint, or
+multi-camera routing. It uses `stun:stun.l.google.com:19302` by default; set
 `WEBRTC_STUN_SERVERS` to a comma-separated `stun:`/`stuns:` allow-list when
-self-hosting. For a simple public test, configure the browser peer with that
-same STUN service:
+self-hosting. The browser reads this configuration from
+`GET /api/v1/webrtc/ice-config` instead of hard-coding deployment credentials.
 
 ```js
+const iceConfig = await fetch("/api/v1/webrtc/ice-config").then((response) => response.json())
 new RTCPeerConnection({
-  iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
+  iceServers: iceConfig.ice_servers,
+  iceCandidatePoolSize: iceConfig.turn_enabled ? 0 : 1,
 })
 ```
 
 It expects the browser to wait for ICE gathering to complete before sending
-the offer. An empty `WEBRTC_STUN_SERVERS` value disables server-side STUN;
-TURN URLs and credentials are deliberately rejected by this demo. If the
-optional media packages were not installed, the endpoint returns `503` with
-code `webrtc_unavailable`.
+the offer. An empty `WEBRTC_STUN_SERVERS` value disables server-side STUN.
+Optional `WEBRTC_TURN_SERVERS` supports either static
+`WEBRTC_TURN_USERNAME`/`WEBRTC_TURN_CREDENTIAL` or expiring coturn REST
+credentials generated from `WEBRTC_TURN_SHARED_SECRET`. The browser receives
+only the derived temporary username/password; the shared secret remains in the
+backend environment. If the optional media packages were not installed, the
+offer endpoint returns `503` with code `webrtc_unavailable`.
 
 ### Modal WebRTC boundary
 

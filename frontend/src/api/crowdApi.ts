@@ -10,6 +10,7 @@ import type {
   SessionStatsResponse,
   VideoAnalysisJobAccepted,
   VideoAnalysisJobStatus,
+  WebRTCIceConfigResponse,
   WebRTCOfferResponse,
   WarmupStatusResponse,
 } from './contracts';
@@ -29,6 +30,8 @@ const DEFAULT_TIMEOUT_MS = 15_000;
 // Only the upload is part of the submit request. Inference and encoding run in
 // one backend job and are observed through short status requests.
 const VIDEO_UPLOAD_TIMEOUT_MS = 60_000;
+let iceConfigCache: { value: WebRTCIceConfigResponse; expiresAtMs: number } | null = null;
+let iceConfigRequest: Promise<WebRTCIceConfigResponse> | null = null;
 
 export class CrowdApiError extends Error {
   readonly status: number;
@@ -134,6 +137,38 @@ export function getHealth(signal?: AbortSignal): Promise<HealthResponse> {
 
 export function getReadiness(signal?: AbortSignal): Promise<ReadyResponse> {
   return requestJson<ReadyResponse>('/ready', { signal });
+}
+
+/** Fetch short-lived browser ICE config without putting TURN secrets in the Vite bundle. */
+export function getWebRTCIceConfig(): Promise<WebRTCIceConfigResponse> {
+  const now = Date.now();
+  if (iceConfigCache && iceConfigCache.expiresAtMs > now) {
+    return Promise.resolve(iceConfigCache.value);
+  }
+  if (iceConfigRequest) return iceConfigRequest;
+
+  const request = requestJson<WebRTCIceConfigResponse>(
+    '/webrtc/ice-config',
+    { cache: 'default' },
+    10_000,
+  ).then((config) => {
+    const advertisedTtlMs = Math.max(5_000, Math.min(300_000, config.cache_ttl_seconds * 1_000));
+    const credentialTtlMs =
+      config.expires_at_epoch == null
+        ? advertisedTtlMs
+        : Math.max(5_000, config.expires_at_epoch * 1_000 - Date.now() - 60_000);
+    iceConfigCache = {
+      value: config,
+      expiresAtMs: Date.now() + Math.min(advertisedTtlMs, credentialTtlMs),
+    };
+    return config;
+  });
+  iceConfigRequest = request;
+  const clearRequest = () => {
+    if (iceConfigRequest === request) iceConfigRequest = null;
+  };
+  void request.then(clearRequest, clearRequest);
+  return request;
 }
 
 export function startWarmup(mode = 'default'): Promise<WarmupStatusResponse> {

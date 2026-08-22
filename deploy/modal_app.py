@@ -240,6 +240,8 @@ app = modal.App("crowd-analytics-mvp")
 image = _runtime_image()
 production_config = modal.Secret.from_name(
     "crowd-analytics-production",
+    # Optional WEBRTC_TURN_* values in this same Secret are injected without
+    # making relay credentials part of the image or frontend build.
     required_keys=["FRONTEND_ORIGINS"],
 )
 

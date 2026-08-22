@@ -60,12 +60,33 @@ If the Secret already exists, update it in the Modal dashboard or rerun the
 command with `--force`. Record the public HTTPS endpoint printed by `modal
 deploy`; it becomes the frontend's `VITE_API_BASE_URL`.
 
+For reliable mobile/4G/5G WebRTC, add a TURN relay to the same backend Secret.
+With coturn `--use-auth-secret`, prefer temporary HMAC credentials:
+
+```powershell
+.\.venv\Scripts\modal.exe secret create crowd-analytics-production `
+  FRONTEND_ORIGINS=https://crowd-dashboard.vercel.app `
+  WEBRTC_TURN_SERVERS="turn:turn.example.com:3478?transport=udp,turn:turn.example.com:3478?transport=tcp,turns:turn.example.com:5349?transport=tcp" `
+  WEBRTC_TURN_SHARED_SECRET="replace-with-the-coturn-shared-secret" `
+  WEBRTC_TURN_CREDENTIAL_TTL_SECONDS=3600 `
+  --force
+```
+
+Managed TURN providers that issue a username/password can instead use
+`WEBRTC_TURN_USERNAME` and `WEBRTC_TURN_CREDENTIAL`. Never place either TURN
+password or the coturn shared secret in `VITE_*`: Vite values are public build
+assets. The browser obtains short-cached ICE entries from
+`GET /api/v1/webrtc/ice-config`; STUN/direct candidates stay enabled, so relay
+bandwidth is used only when ICE selects TURN.
+
 The Modal profile uses:
 
 - `API_WARM_ON_START=false` to avoid loading models for health checks;
 - `FRONTEND_INCLUDE_LOCAL_ORIGINS=false` so production CORS contains only the
   exact Vercel origins from the Modal Secret;
 - `WEBRTC_REQUIRE_LIFECYCLE_SOCKET=true` so detached POST-only peers fail fast;
+- optional server-side TURN credentials exposed to the browser only as a
+  short-lived ICE configuration, never as a frontend environment variable;
 - spawned `run_warmup` and `run_video_job` methods for work that must outlive a
   short web request, without creating a second GPU pool;
 - eight lightweight concurrent ASGI inputs for the long-lived socket, health,

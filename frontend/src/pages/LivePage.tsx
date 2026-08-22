@@ -33,6 +33,7 @@ import {
   createWebRTCSessionSocket,
   deleteSession,
   getApiErrorMessage,
+  getWebRTCIceConfig,
   getWarmupStatus,
   resetSession,
   startWarmup,
@@ -88,6 +89,8 @@ const EMPTY_OVERLAY: OverlayRenderData = {
 
 const LIVE_MODE = 'classroom_demo' as const;
 const CAMERA_PERMISSION_TIMEOUT_MS = 20_000;
+const ICE_GATHERING_TIMEOUT_MS = 10_000;
+const WEBRTC_CONNECTION_TIMEOUT_MS = 15_000;
 const FRAME_SOCKET_MIN_CADENCE_MS = 200;
 const FRAME_SOCKET_MAX_BUFFERED_BYTES = 256_000;
 
@@ -268,20 +271,25 @@ export const LivePage: React.FC<LivePageProps> = ({
 
   const waitForIceGathering = async (peer: RTCPeerConnection): Promise<void> => {
     if (peer.iceGatheringState === 'complete') return;
-    await new Promise<void>((resolve) => {
-      let finished = false;
-      const finish = () => {
-        if (finished) return;
-        finished = true;
+    await new Promise<void>((resolve, reject) => {
+      let settled = false;
+      const finish = (error?: Error) => {
+        if (settled) return;
+        settled = true;
         peer.removeEventListener('icegatheringstatechange', onStateChange);
         window.clearTimeout(timeoutId);
-        resolve();
+        if (error) reject(error);
+        else resolve();
       };
       const onStateChange = () => {
         if (peer.iceGatheringState === 'complete') finish();
       };
-      const timeoutId = window.setTimeout(finish, 3_000);
+      const timeoutId = window.setTimeout(
+        () => finish(new Error('ICE gathering timed out before all candidates were available.')),
+        ICE_GATHERING_TIMEOUT_MS
+      );
       peer.addEventListener('icegatheringstatechange', onStateChange);
+      onStateChange();
     });
   };
 
@@ -435,7 +443,7 @@ export const LivePage: React.FC<LivePageProps> = ({
       };
       const timeoutId = window.setTimeout(
         () => finish(new Error('WebRTC media connection timed out before reaching connected state.')),
-        10_000
+        WEBRTC_CONNECTION_TIMEOUT_MS
       );
       peer.addEventListener('connectionstatechange', onConnectionStateChange);
       onConnectionStateChange();
@@ -478,15 +486,69 @@ export const LivePage: React.FC<LivePageProps> = ({
     if (!('RTCPeerConnection' in window)) {
       throw new Error('WebRTC is not supported by this browser.');
     }
+    let iceServers: RTCIceServer[] = [{ urls: 'stun:stun.l.google.com:19302' }];
+    let turnEnabled = false;
+    try {
+      const iceConfig = await getWebRTCIceConfig();
+      if (iceConfig.ice_servers.length > 0) iceServers = iceConfig.ice_servers;
+      turnEnabled = iceConfig.turn_enabled;
+    } catch (iceConfigError) {
+      // Rolling deployments and local backends may not expose the config
+      // endpoint yet. Keep a STUN-only attempt before using frame fallback.
+      console.warn('[ICE] Dynamic ICE config unavailable; using default STUN:', iceConfigError);
+    }
+    if (
+      streamRef.current !== mediaStream ||
+      !mediaStream.getVideoTracks().some((track) => track.readyState === 'live')
+    ) {
+      throw new Error('Camera stream ended before WebRTC setup began.');
+    }
     const peer = new RTCPeerConnection({
-      iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+      iceServers,
+      // A TURN-backed candidate pool reserves relay allocations before they
+      // are selected. Disable pre-gathering when TURN exists to save relay
+      // quota; one STUN-only pool keeps direct setup responsive.
+      iceCandidatePoolSize: turnEnabled ? 0 : 1,
     });
     webRtcPeerRef.current = peer;
     let disconnectedTimer: number | null = null;
+    let selectedPairLogged = false;
+    peer.onicecandidate = (event) => {
+      if (!event.candidate) {
+        console.debug('[ICE] gathering complete');
+        return;
+      }
+      console.debug('[ICE candidate]', {
+        type: event.candidate.type,
+        protocol: event.candidate.protocol,
+      });
+    };
+    peer.oniceconnectionstatechange = () => {
+      console.debug('[ICE state]', peer.iceConnectionState);
+    };
     mediaStream.getVideoTracks().forEach((track) => {
       peer.addTransceiver(track, { direction: 'sendonly' });
     });
     peer.onconnectionstatechange = () => {
+      console.debug('[PC state]', peer.connectionState);
+      if (peer.connectionState === 'connected' && !selectedPairLogged) {
+        selectedPairLogged = true;
+        void peer.getStats().then((stats) => {
+          stats.forEach((report) => {
+            if (report.type !== 'candidate-pair' || report.state !== 'succeeded' || !report.nominated) return;
+            const local = stats.get(report.localCandidateId);
+            const remote = stats.get(report.remoteCandidateId);
+            console.info('[ICE selected pair]', {
+              localType: local?.candidateType,
+              localProtocol: local?.protocol,
+              remoteType: remote?.candidateType,
+              remoteProtocol: remote?.protocol,
+            });
+          });
+        }).catch((error: unknown) => {
+          console.debug('[ICE] Selected-pair stats unavailable:', error);
+        });
+      }
       if (peer.connectionState !== 'disconnected' && disconnectedTimer != null) {
         window.clearTimeout(disconnectedTimer);
         disconnectedTimer = null;

@@ -18,26 +18,30 @@ socket accepts bounded JPEG frames while retaining the warm tracker session.
 A POST offer endpoint remains for normal self-hosted ASGI deployments.
 
 aiortc peers use a default public STUN server (overridable with
-``WEBRTC_STUN_SERVERS``) for candidate discovery. TURN credentials remain
-intentionally out of scope for this one-camera demo;
-restrictive NATs may therefore still need a managed relay.
+``WEBRTC_STUN_SERVERS``) for candidate discovery. Optional TURN URLs and either
+static or temporary shared-secret credentials are resolved server-side, so
+relay secrets never enter the frontend bundle.
 """
 
 from __future__ import annotations
 
 import asyncio
+import base64
 from contextlib import suppress
+import hashlib
+import hmac
 import json
 import inspect
 import logging
 import os
 from dataclasses import dataclass
-from time import monotonic
+from time import monotonic, time
 from typing import Any, Callable, Literal, Protocol
 
 import cv2
 import numpy as np
-from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect, status
+from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect, status
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, ValidationError
 
 
@@ -45,6 +49,12 @@ LOGGER = logging.getLogger(__name__)
 
 DEFAULT_STUN_SERVER = "stun:stun.l.google.com:19302"
 STUN_SERVERS_ENV = "WEBRTC_STUN_SERVERS"
+TURN_SERVERS_ENV = "WEBRTC_TURN_SERVERS"
+TURN_USERNAME_ENV = "WEBRTC_TURN_USERNAME"
+TURN_CREDENTIAL_ENV = "WEBRTC_TURN_CREDENTIAL"
+TURN_SHARED_SECRET_ENV = "WEBRTC_TURN_SHARED_SECRET"
+TURN_CREDENTIAL_TTL_ENV = "WEBRTC_TURN_CREDENTIAL_TTL_SECONDS"
+TURN_USER_ID_ENV = "WEBRTC_TURN_USER_ID"
 MAX_FALLBACK_FRAME_BYTES = 1_000_000
 FALLBACK_FRAME_MIN_INTERVAL_SECONDS = 0.18
 
@@ -67,6 +77,33 @@ class AiortcBackend:
     video_frame_type: Any
     configuration_type: type[Any] | None = None
     ice_server_type: type[Any] | None = None
+
+
+@dataclass(frozen=True)
+class IceServerSpec:
+    """One browser/aiortc ICE server entry without leaking it into build assets."""
+
+    urls: tuple[str, ...]
+    username: str | None = None
+    credential: str | None = None
+
+    def to_browser_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "urls": self.urls[0] if len(self.urls) == 1 else list(self.urls),
+        }
+        if self.username is not None:
+            payload["username"] = self.username
+        if self.credential is not None:
+            payload["credential"] = self.credential
+        return payload
+
+
+@dataclass(frozen=True)
+class ResolvedIceConfig:
+    servers: tuple[IceServerSpec, ...]
+    turn_enabled: bool
+    expires_at_epoch: int | None
+    cache_ttl_seconds: int
 
 
 def load_aiortc_backend() -> AiortcBackend:
@@ -104,13 +141,12 @@ def _normalize_stun_servers(servers: tuple[str, ...] | list[str]) -> tuple[str, 
 
 
 def resolve_stun_servers(raw_value: str | None = None) -> tuple[str, ...]:
-    """Resolve comma-separated STUN URLs without exposing TURN credentials.
+    """Resolve the non-secret STUN portion of the ICE configuration.
 
     The default helps browser-to-Modal candidate discovery. Set
     ``WEBRTC_STUN_SERVERS`` to a comma-separated list to use an organisation's
     STUN service, or to an empty string to intentionally disable STUN. TURN is
-    not accepted here because this demo has no credential-management or relay
-    policy yet.
+    resolved separately so relay credentials never enter frontend build assets.
     """
 
     configured = os.getenv(STUN_SERVERS_ENV) if raw_value is None else raw_value
@@ -119,20 +155,108 @@ def resolve_stun_servers(raw_value: str | None = None) -> tuple[str, ...]:
     return _normalize_stun_servers(configured.split(","))
 
 
+def _normalize_turn_servers(servers: tuple[str, ...] | list[str]) -> tuple[str, ...]:
+    normalized = tuple(dict.fromkeys(str(server).strip() for server in servers if str(server).strip()))
+    for server in normalized:
+        if not server.lower().startswith(("turn:", "turns:")):
+            raise ValueError("TURN server URLs must start with turn: or turns:.")
+    return normalized
+
+
+def resolve_ice_config(
+    *,
+    stun_servers: tuple[str, ...] | None = None,
+    now_epoch: int | None = None,
+) -> ResolvedIceConfig:
+    """Resolve STUN plus optional TURN credentials from server-side environment.
+
+    Two TURN authentication modes are supported:
+
+    - static ``WEBRTC_TURN_USERNAME`` + ``WEBRTC_TURN_CREDENTIAL``;
+    - temporary coturn REST credentials generated from
+      ``WEBRTC_TURN_SHARED_SECRET``.
+
+    The shared-secret mode is preferred for a public browser client because the
+    returned password expires and the secret itself never leaves the backend.
+    """
+
+    effective_stun = resolve_stun_servers() if stun_servers is None else _normalize_stun_servers(stun_servers)
+    turn_urls = _normalize_turn_servers((os.getenv(TURN_SERVERS_ENV) or "").split(","))
+    static_username = (os.getenv(TURN_USERNAME_ENV) or "").strip() or None
+    static_credential = (os.getenv(TURN_CREDENTIAL_ENV) or "").strip() or None
+    shared_secret = (os.getenv(TURN_SHARED_SECRET_ENV) or "").strip() or None
+
+    if not turn_urls:
+        if static_username or static_credential or shared_secret:
+            raise ValueError(f"{TURN_SERVERS_ENV} is required when TURN credentials are configured.")
+        return ResolvedIceConfig(
+            servers=tuple(IceServerSpec((url,)) for url in effective_stun),
+            turn_enabled=False,
+            expires_at_epoch=None,
+            cache_ttl_seconds=300,
+        )
+
+    if shared_secret and (static_username or static_credential):
+        raise ValueError("Configure either temporary TURN shared-secret auth or static TURN credentials, not both.")
+    if bool(static_username) != bool(static_credential):
+        raise ValueError(f"{TURN_USERNAME_ENV} and {TURN_CREDENTIAL_ENV} must be configured together.")
+    if not shared_secret and not (static_username and static_credential):
+        raise ValueError(
+            f"{TURN_SERVERS_ENV} requires {TURN_SHARED_SECRET_ENV} or a static username/credential pair."
+        )
+
+    expires_at: int | None = None
+    cache_ttl = 300
+    if shared_secret:
+        try:
+            credential_ttl = int(os.getenv(TURN_CREDENTIAL_TTL_ENV, "3600"))
+        except ValueError as exc:
+            raise ValueError(f"{TURN_CREDENTIAL_TTL_ENV} must be an integer.") from exc
+        credential_ttl = min(86_400, max(300, credential_ttl))
+        expires_at = int(time() if now_epoch is None else now_epoch) + credential_ttl
+        user_id = (os.getenv(TURN_USER_ID_ENV) or "crowd-live").strip() or "crowd-live"
+        username = f"{expires_at}:{user_id}"
+        digest = hmac.new(shared_secret.encode("utf-8"), username.encode("utf-8"), hashlib.sha1).digest()
+        credential = base64.b64encode(digest).decode("ascii")
+        cache_ttl = min(300, max(30, credential_ttl - 120))
+    else:
+        username = static_username
+        credential = static_credential
+
+    servers = tuple(IceServerSpec((url,)) for url in effective_stun) + (
+        IceServerSpec(turn_urls, username=username, credential=credential),
+    )
+    return ResolvedIceConfig(
+        servers=servers,
+        turn_enabled=True,
+        expires_at_epoch=expires_at,
+        cache_ttl_seconds=cache_ttl,
+    )
+
+
 def _create_peer_connection(
     backend: AiortcBackend,
     *,
-    stun_servers: tuple[str, ...],
+    ice_servers: tuple[IceServerSpec, ...],
 ) -> Any:
-    """Construct an aiortc peer with STUN, preserving dependency-free mocks."""
+    """Construct an aiortc peer with the same ICE policy exposed to browsers."""
 
     # Test/alternate backends can omit aiortc's ICE configuration classes.
     # Existing lightweight mock peers then retain their zero-argument
     # constructor while real aiortc peers always receive an RTCConfiguration.
     if backend.configuration_type is None or backend.ice_server_type is None:
         return backend.peer_connection_type()
-    ice_servers = [backend.ice_server_type(urls=server) for server in stun_servers]
-    configuration = backend.configuration_type(iceServers=ice_servers)
+    aiortc_servers = []
+    for server in ice_servers:
+        kwargs: dict[str, Any] = {
+            "urls": server.urls[0] if len(server.urls) == 1 else list(server.urls),
+        }
+        if server.username is not None:
+            kwargs["username"] = server.username
+        if server.credential is not None:
+            kwargs["credential"] = server.credential
+        aiortc_servers.append(backend.ice_server_type(**kwargs))
+    configuration = backend.configuration_type(iceServers=aiortc_servers)
     return backend.peer_connection_type(configuration=configuration)
 
 
@@ -354,6 +478,7 @@ def create_webrtc_router(
     session_start_guard: Callable[[], None] | None = None,
     session_ttl_seconds: int | None = 600,
     stun_servers: tuple[str, ...] | None = None,
+    ice_config_provider: Callable[[], ResolvedIceConfig] | None = None,
 ) -> APIRouter:
     """Create non-trickle WebRTC signaling endpoints.
 
@@ -363,10 +488,12 @@ def create_webrtc_router(
     ``session_manager.close(session_id)``.  Connection failures call
     ``registry.close_session`` automatically.  Real aiortc peers use the
     default STUN server unless ``stun_servers`` is explicitly supplied or the
-    ``WEBRTC_STUN_SERVERS`` environment variable overrides it. The WebSocket
-    route keeps signaling, aiortc ingestion, and metadata inside one ASGI call;
-    this is the production path for serverless WebSocket runtimes such as
-    Modal. The HTTP offer remains available for conventional self-hosting.
+    ``WEBRTC_STUN_SERVERS`` environment variable overrides it. Optional TURN
+    credentials are resolved only on the backend and exposed through a short-
+    cached ICE config endpoint. The WebSocket route keeps signaling, aiortc
+    ingestion, and metadata inside one ASGI call; this is the production path
+    for serverless WebSocket runtimes such as Modal. The HTTP offer remains
+    available for conventional self-hosting.
     """
 
     if session_ttl_seconds is not None and session_ttl_seconds < 0:
@@ -376,8 +503,43 @@ def create_webrtc_router(
     effective_stun_servers = (
         resolve_stun_servers() if stun_servers is None else _normalize_stun_servers(stun_servers)
     )
+    effective_ice_config_provider = ice_config_provider or (
+        lambda: resolve_ice_config(stun_servers=effective_stun_servers)
+    )
     peer_registry = registry or WebRTCPeerRegistry(session_manager)
     router = APIRouter(prefix=prefix, tags=["webrtc"])
+
+    @router.get("/webrtc/ice-config")
+    async def get_ice_config(request: Request) -> JSONResponse:
+        """Return browser-safe ICE config; TURN secrets remain server-side."""
+
+        origin = (request.headers.get("origin") or "").rstrip("/")
+        if origin and allowed_websocket_origins and origin not in allowed_websocket_origins:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={"code": "origin_not_allowed", "message": "Frontend origin is not allowed."},
+            )
+        try:
+            config = effective_ice_config_provider()
+        except ValueError as exc:
+            LOGGER.error("Invalid WebRTC ICE configuration: %s", exc)
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={
+                    "code": "ice_configuration_invalid",
+                    "message": "The deployment ICE configuration is invalid.",
+                },
+            ) from exc
+        payload = {
+            "ice_servers": [server.to_browser_dict() for server in config.servers],
+            "turn_enabled": config.turn_enabled,
+            "expires_at_epoch": config.expires_at_epoch,
+            "cache_ttl_seconds": config.cache_ttl_seconds,
+        }
+        return JSONResponse(
+            payload,
+            headers={"Cache-Control": f"private, max-age={config.cache_ttl_seconds}"},
+        )
 
     async def accept_offer(
         offer: WebRTCOfferRequest,
@@ -396,6 +558,17 @@ def create_webrtc_router(
                 detail=_unavailable_detail(exc),
                 headers={"Retry-After": "60"},
             ) from exc
+        try:
+            ice_config = effective_ice_config_provider()
+        except ValueError as exc:
+            LOGGER.error("Invalid WebRTC ICE configuration: %s", exc)
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={
+                    "code": "ice_configuration_invalid",
+                    "message": "The deployment ICE configuration is invalid.",
+                },
+            ) from exc
 
         if not offer.sdp.strip():
             raise HTTPException(
@@ -412,7 +585,7 @@ def create_webrtc_router(
         if response_ttl is not None:
             response_ttl = max(0, int(float(response_ttl)))
         try:
-            peer_connection = _create_peer_connection(backend, stun_servers=effective_stun_servers)
+            peer_connection = _create_peer_connection(backend, ice_servers=ice_config.servers)
         except Exception as exc:
             await peer_registry.close_session(session_id)
             LOGGER.exception("Unable to initialize WebRTC peer for demo session %s", session_id)
@@ -662,7 +835,10 @@ def create_webrtc_router(
 __all__ = [
     "AiortcBackend",
     "DEFAULT_STUN_SERVER",
+    "IceServerSpec",
+    "ResolvedIceConfig",
     "STUN_SERVERS_ENV",
+    "TURN_SERVERS_ENV",
     "WebRTCDependencyUnavailable",
     "WebRTCOfferRequest",
     "WebRTCOfferResponse",
@@ -670,5 +846,6 @@ __all__ = [
     "WebRTCSessionManager",
     "create_webrtc_router",
     "load_aiortc_backend",
+    "resolve_ice_config",
     "resolve_stun_servers",
 ]
