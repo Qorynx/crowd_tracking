@@ -22,7 +22,8 @@ from torchvision import transforms
 
 from src.inference.body_gender_batch import BodyGenderCandidate, BodyGenderEvidence, map_body_gender_batch
 from src.models.gender_classifier import GENDER_LABELS, IMAGE_NET_MEAN, IMAGE_NET_STD, GenderClassifier
-from src.models.body_gender_classifier import BODY_MODEL_ARCHITECTURE, BODY_MODEL_ROLE, BodyGenderClassifier
+from src.models.body_gender_classifier import BODY_MODEL_ARCHITECTURES, BODY_MODEL_ROLE, BodyGenderClassifier
+from src.models.face_detector import ScrfdFaceDetector
 from src.inference.gender_batch import FaceQuality, GenderCandidate, GenderEvidence, map_gender_batch
 from src.tracking.tracker_config import (
     PERSIST_TRACKER_ACROSS_FRAMES,
@@ -501,6 +502,7 @@ class ModelRuntime:
         self.use_mixed_precision = bool(runtime_config.get("use_mixed_precision", False)) and self.device.type == "cuda"
         self.use_horizontal_tta = False
         self.yunet = None
+        self.face_detector_backend = "disabled"
         self.gender_model = None
         self.gender_transform = None
         # Keep the optional body branch's public state valid even while its
@@ -975,14 +977,57 @@ class ModelRuntime:
                 f"{model_path}. Provision the configured local asset with "
                 "`python tools/prepare_production_assets.py` before starting the pipeline."
             )
-        self.yunet = cv2.FaceDetectorYN.create(
-            model=str(model_path),
-            config="",
-            input_size=(320, 320),
-            score_threshold=face_config["confidence_threshold"],
-            nms_threshold=0.3,
-            top_k=100,
-        )
+        backend = str(face_config.get("backend", "yunet")).strip().lower()
+        if backend == "yunet":
+            self.yunet = cv2.FaceDetectorYN.create(
+                model=str(model_path),
+                config="",
+                input_size=(320, 320),
+                score_threshold=face_config["confidence_threshold"],
+                nms_threshold=float(face_config.get("nms_threshold", 0.3)),
+                top_k=int(face_config.get("top_k", 100)),
+            )
+        elif backend == "scrfd":
+            raw_input_size = face_config.get("input_size", (640, 640))
+            if not isinstance(raw_input_size, (list, tuple)) or len(raw_input_size) != 2:
+                raise ValueError("face_detector.input_size must contain [width, height] for SCRFD.")
+            if self.device.type == "cuda":
+                providers = face_config.get(
+                    "providers", ["CUDAExecutionProvider", "CPUExecutionProvider"]
+                )
+                require_cuda = bool(face_config.get("require_cuda", False))
+            else:
+                providers = ["CPUExecutionProvider"]
+                require_cuda = False
+            if not isinstance(providers, (list, tuple)):
+                raise ValueError("face_detector.providers must be a list for SCRFD.")
+            self.yunet = ScrfdFaceDetector(
+                model_path,
+                score_threshold=float(face_config["confidence_threshold"]),
+                nms_threshold=float(face_config.get("nms_threshold", 0.4)),
+                input_size=(int(raw_input_size[0]), int(raw_input_size[1])),
+                providers=tuple(str(value) for value in providers),
+                require_cuda=require_cuda,
+            )
+        else:
+            raise ValueError("face_detector.backend must be 'yunet' or 'scrfd'.")
+        self.face_detector_backend = backend
+
+    def face_detector_statistics(self) -> dict[str, object]:
+        """Return active face-detector/provider metadata for benchmark reports."""
+
+        face_config = self.config.get("face_detector", {})
+        detector_statistics = getattr(self.yunet, "statistics", None)
+        if callable(detector_statistics):
+            return dict(detector_statistics())
+        return {
+            "backend": self.face_detector_backend,
+            "model_path": str(face_config.get("model_path", "")),
+            "score_threshold": float(face_config.get("confidence_threshold", 0.0)),
+            "nms_threshold": float(face_config.get("nms_threshold", 0.3)),
+            "active_providers": ["OpenCV"],
+            "uses_five_keypoints": True,
+        }
 
     def _init_gender_classifier(self) -> None:
         if self.gender_model_path is None:
@@ -1037,8 +1082,13 @@ class ModelRuntime:
             raise ValueError("Body gender checkpoint must contain a model_state_dict entry.")
         if checkpoint.get("model_role") != BODY_MODEL_ROLE:
             raise ValueError(f"Body checkpoint model_role must be {BODY_MODEL_ROLE!r}.")
-        if checkpoint.get("model_architecture") != BODY_MODEL_ARCHITECTURE:
-            raise ValueError(f"Body checkpoint architecture must be {BODY_MODEL_ARCHITECTURE!r}.")
+        model_architecture = str(checkpoint.get("model_architecture", ""))
+        if model_architecture not in BODY_MODEL_ARCHITECTURES:
+            supported = ", ".join(sorted(BODY_MODEL_ARCHITECTURES))
+            raise ValueError(
+                f"Unsupported body checkpoint architecture {model_architecture!r}; "
+                f"expected one of: {supported}."
+            )
         labels = tuple(checkpoint.get("labels", ()))
         if labels != GENDER_LABELS:
             raise ValueError(f"Body checkpoint labels must be {GENDER_LABELS}; received {labels}.")
@@ -1059,7 +1109,9 @@ class ModelRuntime:
         if not 0.5 < threshold < 1.0:
             raise ValueError("Body confidence_threshold must be in (0.5, 1.0).")
 
-        self.body_model = BodyGenderClassifier(pretrained=False).to(self.device)
+        self.body_model = BodyGenderClassifier(
+            architecture=model_architecture, pretrained=False
+        ).to(self.device)
         self.body_model.load_state_dict(checkpoint["model_state_dict"], strict=True)
         self.body_model.eval()
         self.body_transform = transforms.Compose(
@@ -1367,7 +1419,13 @@ class ModelRuntime:
         confidences = output[:, -1]
         return map_body_gender_batch(candidates, logits_np, confidences)
 
-    def body_classifier_statistics(self) -> dict[str, float | int]:
-        """Expose the latest bounded body-batch timing breakdown for profiling."""
+    def body_classifier_statistics(self) -> dict[str, object]:
+        """Expose active body-model metadata and the latest batch timing."""
 
-        return dict(self._last_body_classifier_timing_ms)
+        return {
+            "architecture": getattr(self.body_model, "architecture", None),
+            "input_height": self._body_input_height,
+            "input_width": self._body_input_width,
+            "temperature": round(float(self.body_temperature), 6),
+            **self._last_body_classifier_timing_ms,
+        }

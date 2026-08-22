@@ -434,7 +434,7 @@ class DemoSessionManager:
                     entry = self._warmups[mode]
                     entry.progress = 72.0
                     entry.stage = "attributes_loading"
-                    entry.message = "Đang warm up YuNet, face classifier và body classifier ở background…"
+                    entry.message = "Đang warm up face detector, face classifier và body classifier ở background…"
                 attributes_warmup = getattr(pipeline, "warmup_attributes", None)
                 if callable(attributes_warmup):
                     attributes_warmup()

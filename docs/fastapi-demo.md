@@ -160,6 +160,16 @@ and manually-created sessions, but are not the primary React live data path.
 Self-hosted clients may still use `POST /webrtc/offer`; Modal rejects that
 detached route so the peer cannot outlive its Function Call.
 
+If mobile/carrier NAT prevents ICE from reaching `connected`, the React client
+does not close this lifecycle socket or create a second tracker session. It
+sends `{"event":"fallback","transport":"websocket_frames"}` and then sends
+bounded JPEG binary messages over the same socket. The backend releases only
+the failed aiortc peer, keeps the already-warm pipeline/session, and continues
+returning metadata normally. The browser fallback is capped at 5 FPS, scales
+frames to at most 640 pixels wide, applies socket backpressure, and the backend
+drops payloads larger than 1 MB. Repeated per-frame HTTP requests remain only a
+last-resort compatibility fallback when the lifecycle socket itself is gone.
+
 The demo does not implement a DataChannel, candidate endpoint, TURN
 credentials, or multi-camera routing. It uses `stun:stun.l.google.com:19302` by default; set
 `WEBRTC_STUN_SERVERS` to a comma-separated `stun:`/`stuns:` allow-list when
@@ -182,8 +192,8 @@ code `webrtc_unavailable`.
 
 The React client uses `WebSocket /api/v1/webrtc/connect` for the complete SDP
 offer, SDP answer, and sequence-gated metadata push. That socket remains open
-for the peer lifetime, so Modal keeps the owning Function Call active instead
-of depending on an aiortc task after a POST response has returned. The Modal
+for the live-session lifetime, including bounded frame fallback, so Modal keeps
+the owning Function Call active instead of depending on an aiortc task after a POST response has returned. The Modal
 profile rejects the detached `POST /webrtc/offer` route; that compatibility
 route remains available for conventional self-hosted ASGI deployments.
 
@@ -204,8 +214,8 @@ curl -X POST http://127.0.0.1:8000/api/v1/video/analyze \
   -F "job_id=0123456789abcdef0123456789abcdef"
 ```
 
-The demo accepts `.mp4`, `.mov`, `.avi`, `.mkv`, and `.webm`, with default
-limits of 64 MiB, 60 seconds, and 1,800 frames. The submit response is `202`
+The demo accepts `.mp4`, `.mov`, `.avi`, `.mkv`, `.webm`, `.mpeg`, `.mpg`,
+and `.m4v`, with default limits of 64 MiB, 60 seconds, and 1,800 frames. The submit response is `202`
 with a `job_id` and `status_url`; inference and H.264 encoding continue in one
 background worker instead of keeping the response body open. On Modal the API
 spawns `Backend.run_video_job`, which has its own 900-second Function Call and
@@ -221,6 +231,23 @@ shares the one-container T4 pool with the API. The browser still receives
 }
 ```
 
+From this repository, the local batch client automates submit, polling, JSON
+telemetry persistence, and annotated-video download against Modal:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\test_video_api.py `
+  "D:\videos\*.mp4" `
+  --api-base https://qorynx--web.modal.run `
+  --mode default `
+  --output-dir artifacts\evaluation\modal_video_api
+```
+
+Each clip receives its own directory containing `job_result.json`,
+`pipeline_analytics.json`, `performance.json`, and `annotated.mp4`. The
+performance payload includes whole-clip pipeline FPS, p50/p95 latency, and
+mean/p50/p95 timing for each pipeline stage. The run-level `run_summary.json`
+contains paths and headline performance for every submitted video.
+
 Poll only that status URL. A completed snapshot contains final analytics,
 processing performance, and a short-lived annotated-video URL. The browser may
 leave the page and resume the same job without running inference again. Source
@@ -232,7 +259,7 @@ existing job instead of consuming another inference run.
 ## Demo boundaries
 
 - Session IDs are ephemeral; `person_id` is session-scoped and resets with
-  `POST /reset`, session expiry, or `DELETE`.
+`POST /reset`, session expiry, or `DELETE`.
 - A second live session is rejected with `429` until the first is closed or
   expires. This preserves tracker/session affinity on one demo GPU container.
 - No authentication, durable job/storage service, TURN service, scalable

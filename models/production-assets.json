@@ -10,9 +10,9 @@
     },
     {
       "id": "face_detector",
-      "path": "artifacts/face_detector/face_detection_yunet_2023mar.onnx",
-      "sha256": "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4",
-      "size_bytes": 232589,
+      "path": "artifacts/face_detector/scrfd_2.5g_kps.onnx",
+      "sha256": "041f73f47371333d1d17a6fee6c8ab4e6aecabefe398ff32cca4e2d5eaee0af9",
+      "size_bytes": 3292009,
       "required_by": "pipeline-live.yaml"
     },
     {
@@ -24,9 +24,9 @@
     },
     {
       "id": "body_gender_classifier",
-      "path": "artifacts/body_gender_classifier/body_gender_classifier_mobilenet_v3_small.pth",
-      "sha256": "3a59d875cbb78d800e5f53d5c05ddd59ca56c0af79b80043c5faba81bfebf290",
-      "size_bytes": 6219261,
+      "path": "artifacts/body_gender_classifier/best_body_gender_convnext_tiny.pth",
+      "sha256": "529ebb02b611ff2a884222ff2484ed8eb5deea6677947611826a178fdb421749",
+      "size_bytes": 111359991,
       "required_by": "pipeline-live.yaml"
     }
   ]

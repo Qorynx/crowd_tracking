@@ -28,6 +28,19 @@ from src.inference.live_stream import LivePipeline
 from src.inference.video_io import run_ffmpeg
 
 
+def _percentile(values: list[float], percentile: float) -> float | None:
+    """Return a linearly interpolated percentile without another dependency."""
+
+    if not values:
+        return None
+    ordered = sorted(values)
+    position = (len(ordered) - 1) * percentile / 100.0
+    lower = int(position)
+    upper = min(lower + 1, len(ordered) - 1)
+    weight = position - lower
+    return round(ordered[lower] * (1.0 - weight) + ordered[upper] * weight, 3)
+
+
 class VideoAnalysisError(RuntimeError):
     """Base error for safe client-facing upload diagnostics."""
 
@@ -75,7 +88,9 @@ class VideoAnalyzer(Protocol):
     ) -> dict[str, Any]: ...
 
 
-_SUPPORTED_VIDEO_SUFFIXES = frozenset({".mp4", ".mov", ".avi", ".mkv", ".webm"})
+_SUPPORTED_VIDEO_SUFFIXES = frozenset(
+    {".mp4", ".mov", ".avi", ".mkv", ".webm", ".mpeg", ".mpg", ".m4v"}
+)
 _VIDEO_COPY_CHUNK_BYTES = 1_024 * 1_024
 _VIDEO_JOB_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{20,64}$")
 
@@ -527,6 +542,8 @@ class ShortVideoAnalyzer:
             started_at = perf_counter()
             frames_processed = 0
             last_stats: dict[str, Any] | None = None
+            pipeline_latencies_ms: list[float] = []
+            stage_timings_ms: dict[str, list[float]] = {}
             progress_interval = max(1, reported_frames // 100) if reported_frames else 10
             with TemporaryDirectory(prefix="crowd_api_video_encode_") as encoding_directory:
                 raw_output_path = Path(encoding_directory) / "annotated_raw.mp4"
@@ -543,7 +560,14 @@ class ShortVideoAnalyzer:
                     if frames_processed >= self._max_frames:
                         raise VideoTooLongError(f"The uploaded video exceeds the {self._max_frames}-frame demo limit.")
                     timestamp_seconds = frames_processed / fps
+                    frame_started_at = perf_counter()
                     annotated, last_stats = pipeline.process_frame(frame, timestamp_seconds=timestamp_seconds)
+                    pipeline_latencies_ms.append((perf_counter() - frame_started_at) * 1_000.0)
+                    timing_payload = last_stats.get("runtime", {}).get("timing_ms", {})
+                    if isinstance(timing_payload, dict):
+                        for stage_name, value in timing_payload.items():
+                            if stage_name not in {"p50", "p95"} and isinstance(value, (int, float)):
+                                stage_timings_ms.setdefault(str(stage_name), []).append(float(value))
                     if writer is None:
                         frame_height, frame_width = annotated.shape[:2]
                         if frame_width <= 0 or frame_height <= 0:
@@ -602,6 +626,16 @@ class ShortVideoAnalyzer:
                     ]
                 )
             elapsed_seconds = max(0.0, perf_counter() - started_at)
+            pipeline_seconds = sum(pipeline_latencies_ms) / 1_000.0
+            timing_summary = {
+                stage_name: {
+                    "mean": round(sum(values) / len(values), 3),
+                    "p50": _percentile(values, 50.0),
+                    "p95": _percentile(values, 95.0),
+                }
+                for stage_name, values in sorted(stage_timings_ms.items())
+                if values
+            }
             if output_path is None or not output_path.is_file() or output_path.stat().st_size == 0:
                 raise VideoAnalysisError("The annotated video output could not be encoded.")
             result = {
@@ -619,6 +653,13 @@ class ShortVideoAnalyzer:
                     "average_processing_fps": round(frames_processed / elapsed_seconds, 3)
                     if elapsed_seconds > 0.0
                     else 0.0,
+                    "pipeline_seconds": round(pipeline_seconds, 3),
+                    "pipeline_fps": round(frames_processed / pipeline_seconds, 3)
+                    if pipeline_seconds > 0.0
+                    else 0.0,
+                    "pipeline_p50_latency_ms": _percentile(pipeline_latencies_ms, 50.0),
+                    "pipeline_p95_latency_ms": _percentile(pipeline_latencies_ms, 95.0),
+                    "stage_timing_ms": timing_summary,
                 },
                 # Return the same full analytics envelope used by the live
                 # dashboard. No input or crop data is retained after return.

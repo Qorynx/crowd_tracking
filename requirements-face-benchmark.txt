@@ -1,0 +1,6 @@
+# CAVIAR face-detector benchmark only. Keep the production runtime unchanged.
+# ORT 1.27+ defaults to CUDA 13; 1.26 matches this project's PyTorch CUDA 12.8
+# and cuDNN 9 runtime. Do not install the CPU onnxruntime package alongside it.
+onnxruntime-gpu==1.26.0
+pandas>=2.2,<3
+scipy>=1.14,<2

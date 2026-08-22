@@ -76,7 +76,7 @@ interface OverlayRenderData {
   seats: OverlaySeat[];
 }
 
-type TransportMode = 'http' | 'webrtc';
+type TransportMode = 'http' | 'webrtc' | 'websocket';
 type CameraFacing = 'user' | 'environment';
 
 const EMPTY_OVERLAY: OverlayRenderData = {
@@ -88,10 +88,13 @@ const EMPTY_OVERLAY: OverlayRenderData = {
 
 const LIVE_MODE = 'classroom_demo' as const;
 const CAMERA_PERMISSION_TIMEOUT_MS = 20_000;
+const FRAME_SOCKET_MIN_CADENCE_MS = 200;
+const FRAME_SOCKET_MAX_BUFFERED_BYTES = 256_000;
 
 type WebRTCLifecycleEvent =
   | { event: 'answer'; answer: WebRTCOfferResponse }
   | { event: 'metadata'; data: SessionStatsResponse }
+  | { event: 'transport'; transport: 'websocket_frames'; reason?: string }
   | { event: 'error'; error: ApiErrorDetail };
 
 const longTermPersonLabel = (track: OverlayTrack): string | null => {
@@ -202,6 +205,8 @@ export const LivePage: React.FC<LivePageProps> = ({
   const lastResultSequenceRef = useRef<number | null>(null);
   const activeSessionIdRef = useRef<string | null>(null);
   const isSendingRef = useRef<boolean>(false);
+  const transportFallbackPromiseRef = useRef<Promise<boolean> | null>(null);
+  const frameSocketFallbackRef = useRef<WebSocket | null>(null);
   const onStreamingChangeRef = useRef(onStreamingChange);
   const onSessionChangeRef = useRef(onSessionChange);
 
@@ -247,6 +252,11 @@ export const LivePage: React.FC<LivePageProps> = ({
       if (endToEnd && typeof endToEnd.last === 'number') {
         setLatencyMs(Math.round(endToEnd.last));
       }
+      const cadenceMs = liveStreamTelemetry.configured_cadence_ms;
+      if (typeof cadenceMs === 'number' && cadenceMs > 0) {
+        cadenceMsRef.current = cadenceMs;
+        setAiUpdateRateHz(1_000 / cadenceMs);
+      }
       onTelemetryUpdate?.({
         live_stream: liveStreamTelemetry,
         runtime: analyticsPayload?.runtime,
@@ -280,12 +290,14 @@ export const LivePage: React.FC<LivePageProps> = ({
     activeSessionIdRef.current = null;
     metadataSocketRef.current?.close();
     metadataSocketRef.current = null;
+    frameSocketFallbackRef.current = null;
     webRtcPeerRef.current?.close();
     webRtcPeerRef.current = null;
     setSessionId(null);
     onSessionChangeRef.current?.(null);
     setIsStreaming(false);
     setActiveTransport(null);
+    onStreamingChangeRef.current?.(false);
     if (sessionToClose) {
       try {
         await deleteSession(sessionToClose);
@@ -296,9 +308,16 @@ export const LivePage: React.FC<LivePageProps> = ({
     }
   };
 
-  const startHttpSession = async () => {
+  const startHttpSession = async (mediaStream: MediaStream): Promise<boolean> => {
     const sessionRes = await createSession(LIVE_MODE);
     const newSessionId = sessionRes.session.id;
+    if (
+      streamRef.current !== mediaStream ||
+      !mediaStream.getVideoTracks().some((track) => track.readyState === 'live')
+    ) {
+      void deleteSession(newSessionId).catch(() => undefined);
+      return false;
+    }
     activeSessionIdRef.current = newSessionId;
     lastResultSequenceRef.current = null;
     cadenceMsRef.current = 150;
@@ -308,8 +327,119 @@ export const LivePage: React.FC<LivePageProps> = ({
     setActiveTransport('http');
     setErrorMessage(null);
     setIsStreaming(true);
-    onStreamingChange?.(true);
+    onStreamingChangeRef.current?.(true);
     startFrameLoop();
+    return true;
+  };
+
+  const activateTransportFallback = (mediaStream: MediaStream, reason: unknown): Promise<boolean> => {
+    if (
+      frameSocketFallbackRef.current &&
+      frameSocketFallbackRef.current === metadataSocketRef.current &&
+      frameSocketFallbackRef.current.readyState === WebSocket.OPEN
+    ) {
+      return Promise.resolve(true);
+    }
+    if (transportFallbackPromiseRef.current) return transportFallbackPromiseRef.current;
+
+    const fallbackPromise = (async () => {
+      if (streamRef.current !== mediaStream) return false;
+      const lifecycleSocket = metadataSocketRef.current;
+      if (
+        lifecycleSocket?.readyState === WebSocket.OPEN &&
+        activeSessionIdRef.current
+      ) {
+        try {
+          console.warn('[LivePage] WebRTC unavailable; keeping the lifecycle socket for frame fallback:', reason);
+          frameSocketFallbackRef.current = lifecycleSocket;
+          const failedPeer = webRtcPeerRef.current;
+          webRtcPeerRef.current = null;
+          if (failedPeer) {
+            failedPeer.onconnectionstatechange = null;
+            failedPeer.close();
+          }
+          lifecycleSocket.send(JSON.stringify({ event: 'fallback', transport: 'websocket_frames' }));
+          setActiveTransport('websocket');
+          setIsStreaming(true);
+          onStreamingChangeRef.current?.(true);
+          startSocketFrameLoop(lifecycleSocket);
+          setErrorMessage('WebRTC media was unavailable. Efficient WebSocket frame transport is active.');
+          return true;
+        } catch (socketFallbackError) {
+          frameSocketFallbackRef.current = null;
+          console.warn('[LivePage] Existing lifecycle socket could not enter frame fallback:', socketFallbackError);
+        }
+      }
+
+      console.warn('[LivePage] Lifecycle socket unavailable; enabling bounded HTTP fallback:', reason);
+      try {
+        await cleanupWebRTCSession();
+        if (
+          streamRef.current !== mediaStream ||
+          !mediaStream.getVideoTracks().some((track) => track.readyState === 'live')
+        ) {
+          return false;
+        }
+        if (videoRef.current) {
+          videoRef.current.srcObject = mediaStream;
+          await videoRef.current.play();
+        }
+        const started = await startHttpSession(mediaStream);
+        if (started) {
+          setErrorMessage('WebRTC and its lifecycle socket were unavailable. HTTP frame fallback is active.');
+        }
+        return started;
+      } catch (fallbackError) {
+        if (streamRef.current === mediaStream) {
+          setIsStreaming(false);
+          setActiveTransport(null);
+          onStreamingChangeRef.current?.(false);
+          setErrorMessage(
+            `Camera remains open, but the AI transport could not start: ${getApiErrorMessage(
+              fallbackError,
+              'HTTP fallback failed.'
+            )}`
+          );
+        }
+        return false;
+      }
+    })();
+
+    transportFallbackPromiseRef.current = fallbackPromise;
+    void fallbackPromise.finally(() => {
+      if (transportFallbackPromiseRef.current === fallbackPromise) {
+        transportFallbackPromiseRef.current = null;
+      }
+    });
+    return fallbackPromise;
+  };
+
+  const waitForPeerConnected = async (peer: RTCPeerConnection): Promise<void> => {
+    if (peer.connectionState === 'connected') return;
+    await new Promise<void>((resolve, reject) => {
+      let settled = false;
+      const finish = (error?: Error) => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timeoutId);
+        peer.removeEventListener('connectionstatechange', onConnectionStateChange);
+        if (error) reject(error);
+        else resolve();
+      };
+      const onConnectionStateChange = () => {
+        if (peer.connectionState === 'connected') {
+          finish();
+        } else if (peer.connectionState === 'failed' || peer.connectionState === 'closed') {
+          finish(new Error(`WebRTC connection ${peer.connectionState} before media became active.`));
+        }
+      };
+      const timeoutId = window.setTimeout(
+        () => finish(new Error('WebRTC media connection timed out before reaching connected state.')),
+        10_000
+      );
+      peer.addEventListener('connectionstatechange', onConnectionStateChange);
+      onConnectionStateChange();
+    });
   };
 
   const waitForTrackingReady = async (): Promise<void> => {
@@ -352,15 +482,33 @@ export const LivePage: React.FC<LivePageProps> = ({
       iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
     });
     webRtcPeerRef.current = peer;
+    let disconnectedTimer: number | null = null;
     mediaStream.getVideoTracks().forEach((track) => {
       peer.addTransceiver(track, { direction: 'sendonly' });
     });
     peer.onconnectionstatechange = () => {
+      if (peer.connectionState !== 'disconnected' && disconnectedTimer != null) {
+        window.clearTimeout(disconnectedTimer);
+        disconnectedTimer = null;
+      }
+      if (peer.connectionState === 'disconnected' && disconnectedTimer == null) {
+        disconnectedTimer = window.setTimeout(() => {
+          disconnectedTimer = null;
+          if (
+            webRtcPeerRef.current === peer &&
+            activeSessionIdRef.current &&
+            peer.connectionState === 'disconnected'
+          ) {
+            void activateTransportFallback(mediaStream, new Error('WebRTC connection remained disconnected.'));
+          }
+        }, 4_000);
+      }
       if (
+        webRtcPeerRef.current === peer &&
         activeSessionIdRef.current &&
         (peer.connectionState === 'failed' || peer.connectionState === 'closed')
       ) {
-        stopStream();
+        void activateTransportFallback(mediaStream, new Error(`WebRTC connection ${peer.connectionState}.`));
       }
     };
     const offer = await peer.createOffer({ offerToReceiveVideo: false });
@@ -403,6 +551,13 @@ export const LivePage: React.FC<LivePageProps> = ({
           applyMetadataStats(message.data);
           return;
         }
+        if (message.event === 'transport' && message.transport === 'websocket_frames') {
+          void activateTransportFallback(
+            mediaStream,
+            new Error(message.reason || 'Server selected WebSocket frame transport.')
+          );
+          return;
+        }
         if (message.event === 'error') {
           finishWithError(new Error(message.error.message || 'WebRTC signaling failed.'));
           return;
@@ -420,9 +575,6 @@ export const LivePage: React.FC<LivePageProps> = ({
             negotiated = true;
             settled = true;
             window.clearTimeout(timeoutId);
-            setActiveTransport('webrtc');
-            setIsStreaming(true);
-            onStreamingChangeRef.current?.(true);
             resolve();
           })
           .catch((error: unknown) => {
@@ -439,12 +591,22 @@ export const LivePage: React.FC<LivePageProps> = ({
         }
         if (metadataSocketRef.current === socket && activeSessionIdRef.current) {
           metadataSocketRef.current = null;
-          // This socket owns the serverless peer lifetime. Do not silently
-          // switch a dropped WebRTC session into continuous HTTP uploads.
-          stopStream();
+          frameSocketFallbackRef.current = null;
+          void activateTransportFallback(mediaStream, new Error('WebRTC lifecycle socket closed.'));
         }
       };
     });
+    await waitForPeerConnected(peer);
+    if (
+      webRtcPeerRef.current !== peer ||
+      streamRef.current !== mediaStream ||
+      !activeSessionIdRef.current
+    ) {
+      throw new Error('WebRTC connection was replaced before media became active.');
+    }
+    setActiveTransport('webrtc');
+    setIsStreaming(true);
+    onStreamingChangeRef.current?.(true);
   };
 
   const startStream = async (requestedFacing: CameraFacing = facingMode, forceRestart = false) => {
@@ -541,14 +703,7 @@ export const LivePage: React.FC<LivePageProps> = ({
       try {
         await startWebRTCSession(mediaStream);
       } catch (webRtcError) {
-        console.warn('[LivePage] WebRTC negotiation failed; enabling bounded HTTP fallback:', webRtcError);
-        await cleanupWebRTCSession();
-        if (videoRef.current) {
-          videoRef.current.srcObject = mediaStream;
-          await videoRef.current.play();
-        }
-        await startHttpSession();
-        setErrorMessage('WebRTC negotiation failed. HTTP frame fallback is active for this session.');
+        await activateTransportFallback(mediaStream, webRtcError);
       }
     } catch (err: any) {
       console.error('Camera stream error:', err);
@@ -589,6 +744,8 @@ export const LivePage: React.FC<LivePageProps> = ({
       videoRef.current.srcObject = null;
     }
     isSendingRef.current = false;
+    transportFallbackPromiseRef.current = null;
+    frameSocketFallbackRef.current = null;
     frameAbortControllerRef.current?.abort();
     frameAbortControllerRef.current = null;
     lastResultSequenceRef.current = null;
@@ -640,6 +797,86 @@ export const LivePage: React.FC<LivePageProps> = ({
   };
 
   const latestTracksRef = useRef<OverlayTrack[]>([]);
+  const startSocketFrameLoop = (socket: WebSocket) => {
+    if (intervalRef.current) clearTimeout(intervalRef.current);
+    lastFrameTimeRef.current = performance.now();
+    const effectiveCadenceMs = () => Math.max(FRAME_SOCKET_MIN_CADENCE_MS, cadenceMsRef.current);
+    setAiUpdateRateHz(1_000 / effectiveCadenceMs());
+
+    const tick = () => {
+      const video = videoRef.current;
+      const captureCanvas = captureCanvasRef.current;
+      const scheduleNext = () => {
+        if (
+          frameSocketFallbackRef.current === socket &&
+          activeSessionIdRef.current &&
+          socket.readyState === WebSocket.OPEN
+        ) {
+          intervalRef.current = window.setTimeout(tick, effectiveCadenceMs());
+        }
+      };
+
+      if (!video || !captureCanvas || video.paused || video.ended) {
+        scheduleNext();
+        return;
+      }
+
+      const now = performance.now();
+      const delta = now - lastFrameTimeRef.current;
+      lastFrameTimeRef.current = now;
+      if (delta > 0) {
+        const nextCameraFps = Math.round(1000 / delta);
+        cameraFpsRef.current = nextCameraFps;
+        setCameraFps(nextCameraFps);
+      }
+
+      const sourceWidth = video.videoWidth || 640;
+      const sourceHeight = video.videoHeight || 480;
+      const scale = Math.min(1, 640 / sourceWidth);
+      const frameWidth = Math.max(1, Math.round(sourceWidth * scale));
+      const frameHeight = Math.max(1, Math.round(sourceHeight * scale));
+      if (captureCanvas.width !== frameWidth || captureCanvas.height !== frameHeight) {
+        captureCanvas.width = frameWidth;
+        captureCanvas.height = frameHeight;
+      }
+      const capCtx = captureCanvas.getContext('2d');
+      if (!capCtx) {
+        scheduleNext();
+        return;
+      }
+      capCtx.drawImage(video, 0, 0, frameWidth, frameHeight);
+
+      if (
+        !isSendingRef.current &&
+        socket.readyState === WebSocket.OPEN &&
+        socket.bufferedAmount <= FRAME_SOCKET_MAX_BUFFERED_BYTES
+      ) {
+        isSendingRef.current = true;
+        captureCanvas.toBlob(
+          (blob) => {
+            try {
+              if (
+                blob &&
+                frameSocketFallbackRef.current === socket &&
+                socket.readyState === WebSocket.OPEN &&
+                socket.bufferedAmount <= FRAME_SOCKET_MAX_BUFFERED_BYTES
+              ) {
+                socket.send(blob);
+              }
+            } finally {
+              isSendingRef.current = false;
+            }
+          },
+          'image/jpeg',
+          0.68
+        );
+      }
+      scheduleNext();
+    };
+
+    tick();
+  };
+
   const startFrameLoop = () => {
     if (intervalRef.current) clearTimeout(intervalRef.current);
     lastFrameTimeRef.current = performance.now();

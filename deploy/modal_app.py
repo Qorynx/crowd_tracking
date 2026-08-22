@@ -207,7 +207,7 @@ def _runtime_image() -> modal.Image:
         )
         .add_local_file(
             model_assets["face_detector"],
-            remote_path=f"{REMOTE_ROOT}/artifacts/face_detector/face_detection_yunet_2023mar.onnx",
+            remote_path=f"{REMOTE_ROOT}/artifacts/face_detector/scrfd_2.5g_kps.onnx",
             copy=True,
         )
         .add_local_file(
@@ -217,7 +217,7 @@ def _runtime_image() -> modal.Image:
         )
         .add_local_file(
             model_assets["body_gender_classifier"],
-            remote_path=f"{REMOTE_ROOT}/artifacts/body_gender_classifier/body_gender_classifier_mobilenet_v3_small.pth",
+            remote_path=f"{REMOTE_ROOT}/artifacts/body_gender_classifier/best_body_gender_convnext_tiny.pth",
             copy=True,
         )
         .add_local_file(

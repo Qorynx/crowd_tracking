@@ -13,8 +13,9 @@ offer has finished ICE gathering, then sends the complete offer through the
 frame into ``LiveFrameProcessor``. It does not render or send an annotated
 video track back to the browser. The same persistent socket pushes compact
 analytics/overlay metadata and keeps a serverless Function Call alive for the
-full aiortc peer lifetime. A POST offer endpoint remains for normal
-self-hosted ASGI deployments.
+live-session lifetime. If mobile NAT prevents ICE from connecting, that same
+socket accepts bounded JPEG frames while retaining the warm tracker session.
+A POST offer endpoint remains for normal self-hosted ASGI deployments.
 
 aiortc peers use a default public STUN server (overridable with
 ``WEBRTC_STUN_SERVERS``) for candidate discovery. TURN credentials remain
@@ -26,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import suppress
+import json
 import inspect
 import logging
 import os
@@ -33,6 +35,7 @@ from dataclasses import dataclass
 from time import monotonic
 from typing import Any, Callable, Literal, Protocol
 
+import cv2
 import numpy as np
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect, status
 from pydantic import BaseModel, Field, ValidationError
@@ -42,6 +45,8 @@ LOGGER = logging.getLogger(__name__)
 
 DEFAULT_STUN_SERVER = "stun:stun.l.google.com:19302"
 STUN_SERVERS_ENV = "WEBRTC_STUN_SERVERS"
+MAX_FALLBACK_FRAME_BYTES = 1_000_000
+FALLBACK_FRAME_MIN_INTERVAL_SECONDS = 0.18
 
 
 class WebRTCDependencyUnavailable(RuntimeError):
@@ -374,7 +379,11 @@ def create_webrtc_router(
     peer_registry = registry or WebRTCPeerRegistry(session_manager)
     router = APIRouter(prefix=prefix, tags=["webrtc"])
 
-    async def accept_offer(offer: WebRTCOfferRequest) -> tuple[WebRTCOfferResponse, Any]:
+    async def accept_offer(
+        offer: WebRTCOfferRequest,
+        *,
+        preserve_session_on_peer_failure: bool = False,
+    ) -> tuple[WebRTCOfferResponse, Any]:
         """Create one tracker-owned peer and return its SDP answer."""
 
         # Do this before creating a session, avoiding a model/session leak when
@@ -422,7 +431,14 @@ def create_webrtc_router(
         async def on_connectionstatechange() -> None:
             connection_state = str(getattr(peer_connection, "connectionState", "")).lower()
             if connection_state in {"failed", "closed"}:
-                await peer_registry.close_session(session_id, expected_peer=peer_connection)
+                if preserve_session_on_peer_failure:
+                    # The lifecycle WebSocket can continue carrying bounded
+                    # JPEG frames when mobile/carrier NAT prevents ICE from
+                    # finding a usable UDP path. Keep the already-warm tracker
+                    # session and release only the failed aiortc peer.
+                    await peer_registry.close_peer(session_id, expected_peer=peer_connection)
+                else:
+                    await peer_registry.close_session(session_id, expected_peer=peer_connection)
 
         @peer_connection.on("track")
         def on_track(track: Any) -> None:
@@ -511,16 +527,77 @@ def create_webrtc_router(
         try:
             raw_offer = await asyncio.wait_for(websocket.receive_json(), timeout=15.0)
             offer = WebRTCOfferRequest.model_validate(raw_offer)
-            response, peer_connection = await accept_offer(offer)
+            response, peer_connection = await accept_offer(
+                offer,
+                preserve_session_on_peer_failure=True,
+            )
             await websocket.send_json(
                 {"event": "answer", "answer": response.model_dump(mode="json")}
             )
             last_sequence: int | None = None
+            fallback_active = False
+            last_fallback_submission = 0.0
+
+            async def enable_frame_fallback(reason: str) -> None:
+                nonlocal fallback_active
+                if fallback_active:
+                    return
+                fallback_active = True
+                await peer_registry.close_peer(
+                    response.session_id,
+                    expected_peer=peer_connection,
+                )
+                await websocket.send_json(
+                    {
+                        "event": "transport",
+                        "transport": "websocket_frames",
+                        "reason": reason,
+                    }
+                )
+
             receive_task = asyncio.create_task(websocket.receive())
-            while not receive_task.done():
+            while True:
                 peer_state = str(getattr(peer_connection, "connectionState", "")).lower()
-                if peer_state in {"failed", "closed"}:
-                    break
+                if peer_state in {"failed", "closed"} and not fallback_active:
+                    await enable_frame_fallback(f"webrtc_{peer_state}")
+
+                if receive_task.done():
+                    message = receive_task.result()
+                    if message.get("type") == "websocket.disconnect":
+                        break
+                    receive_task = asyncio.create_task(websocket.receive())
+
+                    text_payload = message.get("text")
+                    if isinstance(text_payload, str):
+                        try:
+                            control = json.loads(text_payload)
+                        except json.JSONDecodeError:
+                            control = None
+                        if (
+                            isinstance(control, dict)
+                            and control.get("event") == "fallback"
+                            and control.get("transport") == "websocket_frames"
+                        ):
+                            await enable_frame_fallback("client_requested")
+
+                    frame_bytes = message.get("bytes")
+                    if isinstance(frame_bytes, bytes) and fallback_active:
+                        submitted_at = monotonic()
+                        if (
+                            0 < len(frame_bytes) <= MAX_FALLBACK_FRAME_BYTES
+                            and submitted_at - last_fallback_submission
+                            >= FALLBACK_FRAME_MIN_INTERVAL_SECONDS
+                        ):
+                            encoded = np.frombuffer(frame_bytes, dtype=np.uint8)
+                            frame = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
+                            if isinstance(frame, np.ndarray) and frame.ndim == 3:
+                                last_fallback_submission = submitted_at
+                                session_manager.submit_frame(
+                                    response.session_id,
+                                    frame,
+                                    submitted_at=submitted_at,
+                                )
+
                 result = session_manager.latest_result(response.session_id)
                 sequence = getattr(result, "sequence", None)
                 if (
@@ -536,10 +613,6 @@ def create_webrtc_router(
                     )
                     last_sequence = sequence
                 await asyncio.sleep(0.05)
-            if receive_task.done():
-                message = receive_task.result()
-                if message.get("type") != "websocket.disconnect":
-                    await websocket.close(code=1000)
         except (WebSocketDisconnect, asyncio.CancelledError):
             pass
         except (ValidationError, asyncio.TimeoutError) as exc:

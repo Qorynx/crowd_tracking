@@ -30,9 +30,9 @@ The production application needs these operator-provided local files:
 
 ```text
 artifacts/person_detector/yolo11n.pt
-artifacts/face_detector/face_detection_yunet_2023mar.onnx
+artifacts/face_detector/scrfd_2.5g_kps.onnx
 artifacts/gender_classifier/face_gender_classifier_mobilenet_v3_large.pth
-artifacts/body_gender_classifier/body_gender_classifier_mobilenet_v3_small.pth
+artifacts/body_gender_classifier/best_body_gender_convnext_tiny.pth
 ```
 
 Their expected checksums and safe verification/copy workflow are in

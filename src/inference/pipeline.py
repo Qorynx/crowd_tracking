@@ -502,6 +502,11 @@ class CrowdGenderPipeline:
                     if callable(getattr(self.runtime, "detector_statistics", None))
                     else {}
                 ),
+                "face_detector": (
+                    self.runtime.face_detector_statistics()
+                    if callable(getattr(self.runtime, "face_detector_statistics", None))
+                    else {}
+                ),
                 "gender_batch_size": self._last_gender_batch_size,
                 "body_gender_batch_size": self._last_body_gender_batch_size,
                 "body_classifier_timing": (

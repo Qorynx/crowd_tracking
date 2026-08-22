@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "license_notice": "InsightFace pretrained models are limited to non-commercial research unless separately licensed.",
+  "source_packages": [
+    {
+      "name": "buffalo_m.zip",
+      "url": "https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_m.zip",
+      "sha256": "d98264bd8f2dc75cbc2ddce2a14e636e02bb857b3051c234b737bf3b614edca9",
+      "archive_member": "buffalo_m/det_2.5g.onnx"
+    },
+    {
+      "name": "buffalo_l.zip",
+      "url": "https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_l.zip",
+      "sha256": "80ffe37d8a5940d59a7384c201a2a38d4741f2f3c51eef46ebb28218a7b0ca2f",
+      "archive_member": "det_10g.onnx"
+    }
+  ],
+  "assets": [
+    {
+      "id": "scrfd_2_5g_kps_benchmark",
+      "path": "artifacts/face_detector/scrfd_2.5g_kps.onnx",
+      "sha256": "041f73f47371333d1d17a6fee6c8ab4e6aecabefe398ff32cca4e2d5eaee0af9",
+      "size_bytes": 3292009,
+      "required_by": "pipeline-face-benchmark-scrfd-2.5g.yaml",
+      "upstream_name": "buffalo_m/det_2.5g.onnx"
+    },
+    {
+      "id": "scrfd_10g_kps_benchmark",
+      "path": "artifacts/face_detector/scrfd_10g_kps.onnx",
+      "sha256": "5838f7fe053675b1c7a08b633df49e7af5495cee0493c7dcf6697200b85b5b91",
+      "size_bytes": 16923827,
+      "required_by": "pipeline-face-benchmark-scrfd-10g.yaml",
+      "upstream_name": "buffalo_l/det_10g.onnx"
+    }
+  ]
+}
